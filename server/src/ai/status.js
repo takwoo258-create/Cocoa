@@ -12,6 +12,7 @@ import { recordUsage } from './usage.js';
 import { parseReply, extractJson } from './reply.js';
 import { ensureBackgroundConversation, limitState } from './context.js';
 import * as defaultProvider from './provider.js';
+import { getWeatherSafe, weatherPrompt } from '../services/integrations.js';
 import logger from '../core/logger.js';
 
 export const SLEEP_SUFFIX = '若强行叫醒的话，可能会带来不必要的麻烦哦';
@@ -132,7 +133,7 @@ export function detectAbnormal(status = {}) {
 
 // ---------------- 状态刷新 ----------------
 
-export function buildStatusPrompt(character, state, { softLimited = false } = {}) {
+export function buildStatusPrompt(character, state, { softLimited = false, world = '' } = {}) {
   const parts = tzParts();
   return [
     `你是「${character.name}」，请根据人设推断你此刻真实的状态。`,
@@ -140,6 +141,7 @@ export function buildStatusPrompt(character, state, { softLimited = false } = {}
     `世界观：${character.worldview || '未设定'}。`,
     `当前状态：动作「${state.motion || '安静地待着'}」，心理「${state.psychology || '平静'}」，心情「${state.mood || '平静'}」，健康「${state.health || '健康'}」。`,
     `当前时间：${parts.day} ${parts.hhmm}（UTC+8）。`,
+    world ? `外部环境：${world}` : '',
     '请结合种族、性别与设定推断生理状态、健康程度与是否患病，并给出一小段动作、心理活动、心情、健康状态。',
     `当前作息：${normalizeSleepState(state?.sleep_state) || 'awake'}（awake 清醒 / napping 午睡或小睡 / sleeping 夜间睡眠）。请结合当前时间、人设与健康状况重新判断此刻是否清醒、在午睡还是在睡觉。`,
     '健康与心情正常时 healthAbnormal/moodAbnormal 为 false；出现疾病、受伤、明显不适或强烈负面情绪时为 true。',
@@ -208,6 +210,13 @@ export async function refreshStatus({ userId, characterId, provider = defaultPro
 
   const state = ensureState(characterId, userId);
   const settings = character.settings || getSettings(characterId, userId);
+  let world = '';
+  try {
+    const weather = await getWeatherSafe('宣城');
+    world = weather ? weatherPrompt(weather) : '';
+  } catch {
+    world = '';
+  }
   let parsed = null;
   let model = null;
   let rawStatus = null;
@@ -219,7 +228,7 @@ export async function refreshStatus({ userId, characterId, provider = defaultPro
       thinking: false,
       json: true,
       messages: [
-        { role: 'system', content: buildStatusPrompt(character, state, { softLimited: limits.softLimited }) },
+        { role: 'system', content: buildStatusPrompt(character, state, { softLimited: limits.softLimited, world }) },
         { role: 'user', content: '现在请输出你的状态 JSON。' },
       ],
     });

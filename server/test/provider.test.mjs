@@ -10,7 +10,7 @@ process.env.COCOA_DATA_DIR = DATA_DIR;
 process.env.COCOA_LOG_LEVEL = 'error';
 
 const { createMockOpenAI } = await import('./mock-openai.mjs');
-const { listModels, baseUrlCandidates, parseModelListPayload } = await import('../src/ai/provider.js');
+const { listModels, baseUrlCandidates, parseModelListPayload, synthesize } = await import('../src/ai/provider.js');
 const { saveUserApi } = await import('../src/services/settings.js');
 const { run } = await import('../src/db/index.js');
 const { hashPassword } = await import('../src/core/crypto.js');
@@ -64,6 +64,38 @@ test('listModels：远端不可达时返回内置候选并给出 warning', async
   assert.ok(result.models.length > 0);
   assert.ok(result.warning);
   assert.ok(result.attempts.length >= 1);
+});
+
+test('Breeze TTS：output_format 走 query，default voice 自动解析', async () => {
+  const http = await import('node:http');
+  let seen = null;
+  const srv = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (req.method === 'GET' && url.pathname === '/v1/voices/random') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ voices: [{ voice_id: 'voc_test_1', name: 'test' }] }));
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/text-to-speech/voc_test_1') {
+      let raw = '';
+      req.on('data', (d) => (raw += d));
+      req.on('end', () => {
+        seen = { query: url.search, body: JSON.parse(raw) };
+        res.writeHead(200, { 'content-type': 'audio/mpeg' });
+        res.end(Buffer.from([0x49, 0x44, 0x33]));
+      });
+      return;
+    }
+    res.writeHead(404).end('{}');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  saveUserApi('u_provider', { tts: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'brz_test', model: 'breeze-tts-2', voice: 'default' } });
+  const out = await synthesize('u_provider', '你好');
+  srv.close();
+  assert.equal(out.provider, 'breeze');
+  assert.ok(out.buffer.length > 0);
+  assert.equal(seen.query, '?output_format=mp3');
+  assert.deepEqual(seen.body, { text: '你好' });
 });
 
 test('版本比较', async () => {

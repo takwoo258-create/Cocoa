@@ -9,6 +9,29 @@ import logger from '../core/logger.js';
 
 const log = logger;
 const clientCache = new Map();
+const breezeVoiceCache = new Map();
+
+async function resolveBreezeVoice(base, apiKey) {
+  const key = `${base}|${apiKey}`;
+  if (breezeVoiceCache.has(key)) return breezeVoiceCache.get(key);
+  try {
+    const res = await fetch(`${base}/v1/voices/random`, {
+      headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    // Breeze 的 /v1/voices/random 返回单个对象 {voice_id,...}，不是数组
+    const single = data && !Array.isArray(data) ? (data.voice_id || data.voiceId || data.id || "") : "";
+    if (single) { breezeVoiceCache.set(key, single); return single; }
+    const list = Array.isArray(data?.voices) ? data.voices : Array.isArray(data?.data) ? data.data : [];
+    const id = list.map((v) => v?.voice_id || v?.voiceId || v?.id).find(Boolean);
+    if (id) breezeVoiceCache.set(key, id);
+    return id || null;
+  } catch {
+    return null;
+  }
+}
 
 function serviceConfig(userId, service) {
   const cfg = getUserApi(userId);
@@ -274,7 +297,15 @@ export async function synthesize(userId, text, { voice } = {}) {
   const voiceId = voice || conf.voice || conf.extra?.voiceId || '';
   if (mode === 'breeze') {
     const base = (conf.baseUrl || 'https://api.breezeblue.ai').replace(/\/+$/, '').replace(/\/v1$/, '');
-    const url = `${base}/v1/text-to-speech/${encodeURIComponent(voiceId || 'default')}`;
+    let resolvedVoice = voiceId;
+    if (!resolvedVoice || resolvedVoice === 'default') {
+      resolvedVoice = await resolveBreezeVoice(base, conf.apiKey);
+    }
+    if (!resolvedVoice) throw new AppError(400, 'tts_voice_required', 'Breeze TTS 需要 voice ID（形如 voc_xxx），请在配置中填写，或确认账号有可用音色');
+    const voiceForUrl = resolvedVoice;
+    const format = conf.extra?.format || 'mp3';
+    // Breeze 的 output_format 是 query 参数，放 body 会 422 Extra inputs are not permitted
+    const url = `${base}/v1/text-to-speech/${encodeURIComponent(voiceForUrl)}?output_format=${encodeURIComponent(format)}`;
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -282,7 +313,7 @@ export async function synthesize(userId, text, { voice } = {}) {
           authorization: `Bearer ${conf.apiKey}`,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ text, output_format: conf.extra?.format || 'mp3' }),
+        body: JSON.stringify({ text, ...(conf.extra?.modelId ? { modelId: conf.extra.modelId } : {}) }),
         signal: AbortSignal.timeout(60_000),
       });
       if (!res.ok) {

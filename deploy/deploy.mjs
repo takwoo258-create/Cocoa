@@ -189,6 +189,9 @@ async function deploy() {
     const r = await exec(conn, cmd, { stream: true, timeout: 900000 });
     if (r.code !== 0) die(`安装脚本失败（rc=${r.code}）`);
 
+    // 数据目录属主兜底（历史上出现过 root:root 导致 EACCES）
+    await exec(conn, `chown -R cocoa:cocoa ${CFG.appDir}/data 2>/dev/null; chmod 750 ${CFG.appDir}/data 2>/dev/null; true`, { timeout: 30000 });
+
     const health = await exec(conn, `curl -fsS -m 5 http://127.0.0.1:${CFG.appPort}/api/health`, { timeout: 30000 });
     log('远程健康检查：', (health.out || '').trim() || '(无响应)');
     const pwdRes = await exec(conn, `test -f ${CFG.appDir}/.admin-initial-password && echo '已生成（600，勿外泄）' || echo '(沿用旧密码)'`);
