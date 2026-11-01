@@ -79,6 +79,10 @@ export function describeModel(id = '') {
   };
 }
 
+export function lookupContextWindow(id = '') {
+  return WINDOWS.find(([re]) => re.test(String(id)))?.[1] ?? null;
+}
+
 export function contextWindowFor(id) {
   return describeModel(id).contextWindow;
 }

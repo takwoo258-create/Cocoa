@@ -10,10 +10,14 @@ import '../models/character.dart';
 import '../models/memory_graph.dart';
 
 /// 记忆网状图：智能体 - 大类目 - 小类目 - 记忆点。
+/// v1.0.1：可只传 characterId（从任意入口打开，不依赖聊天页上下文）。
 class MemoryPage extends StatefulWidget {
-  const MemoryPage({super.key, required this.character});
+  const MemoryPage({super.key, this.character, this.characterId})
+      : assert(character != null || characterId != null,
+            'character 与 characterId 至少传入一个');
 
-  final Character character;
+  final Character? character;
+  final String? characterId;
 
   @override
   State<MemoryPage> createState() => _MemoryPageState();
@@ -25,19 +29,53 @@ class _MemoryPageState extends State<MemoryPage> {
   String? _selectedId;
   bool _loading = true;
   String? _error;
+  String _cid = '';
+  String _characterName = '';
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    final Character? c = widget.character;
+    if (c != null) {
+      _cid = c.id;
+      _characterName = c.name;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _resolveCharacter());
+    }
+  }
+
+  Future<void> _resolveCharacter() async {
+    final String? id = widget.characterId;
+    if (id == null || id.isEmpty) {
+      if (mounted) setState(() => _error = '缺少角色 ID');
+      return;
+    }
+    final AppState state = AppScope.read(context);
+    try {
+      final Character c = await state.characterService.get(id);
+      if (!mounted) return;
+      setState(() {
+        _cid = c.id;
+        _characterName = c.name;
+      });
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = '角色加载失败：$e';
+        });
+      }
+    }
   }
 
   Future<void> _load() async {
     final AppState state = AppScope.read(context);
+    if (_cid.isEmpty) return;
     if (mounted) setState(() => _loading = true);
     try {
-      final MemoryGraph g =
-          await state.memoryService.graph(widget.character.id);
+      final MemoryGraph g = await state.memoryService.graph(_cid);
       if (!mounted) return;
       setState(() {
         _graph = g;
@@ -215,7 +253,7 @@ class _MemoryPageState extends State<MemoryPage> {
               _kv('创建时间', formatDateTime(node.createdAt)),
               _kv('大类目', node.big.isEmpty ? '未分类' : node.big),
               _kv('小类目', node.small.isEmpty ? '未分类' : node.small),
-              _kv('所属角色', widget.character.name),
+              _kv('所属角色', _characterName),
               const SizedBox(height: 10),
               const Text(
                 '关联记忆',
@@ -291,7 +329,7 @@ class _MemoryPageState extends State<MemoryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.character.name} · 记忆'),
+        title: Text('$_characterName · 记忆'),
         actions: <Widget>[
           IconButton(
             tooltip: '刷新',

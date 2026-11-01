@@ -34,6 +34,24 @@ lib/
   发送消息时携带字符串 `mediaId`；播放走 `just_audio` 并带 Authorization 头。
 - **服务地址**：默认 `http://120.26.204.70:8787`，可在登录页/设置页修改并做健康检查。
 
+## v1.0.1 增量
+
+- 模型列表：点「获取模型列表」前先保存当前 baseUrl/apiKey/model；展示 `source/warning/attempts`，
+  远端失败时可重试或手动输入模型名；每个模型显示 `contextWindow` 与来源（远程/内置/默认）；
+  支持手动上下文覆盖（`preferences.contextLimits`，可存为当前模型或 default）。
+- 首次配置弹窗：键盘弹出时 Dialog 自动上移 + 内容可滚动，所有字段与「保存并进入」均可达。
+- 顶部提示：`showToast` 改为 Overlay + SlideTransition 浮层（错误红/普通深色），不受键盘影响。
+- 设置页二级菜单：个人信息 / 服务配置 / 角色配置 / 模型分工 / Token 限额 / 对话偏好 / 关于与版本。
+- 角色状态独立页（动作/心理/心情/健康/睡眠/亲密度/陪伴天数，刷新与叫醒）；聊天页状态卡改为可点击紧凑状态条。
+- 记忆页支持只传 `characterId`，不再依赖聊天页上下文。
+- 页面切换动效（淡入 + 右滑），主页 Tab 使用 IndexedStack + FadeTransition。
+- 角色输入状态：`typing` 事件的 `checking/waiting/replying` 阶段文案 + 三点动画；发送后立即显示输入中。
+- QQ 空间动态：阅读页/书架条目分享（`POST /api/onebot/qzone`，内容 1000 字内，503 提示 NapCat 未连接）；
+  角色设置新增 `qzoneEnabled` 开关。
+- 版本推送：`GET /api/version/latest?current=1.0.1`，主页横幅与「关于与版本」页可下载（gh-proxy）与忽略；
+  下载通过 `MethodChannel('cocoa/native').invokeMethod('openUrl')` 调系统浏览器。
+- 限额增加 `limits.enabled` 总开关；移除 search/fetch 服务配置项（复用 DeepSeek）；注册 QQ 必填。
+
 ## 构建
 
 工具链（本机）：Flutter 3.47.9 / Dart 3.13.7、AGP 9.1.0、Gradle 9.3.1、JDK 17、Android SDK 36。

@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getUserApi, getPrefs } from '../services/settings.js';
-import { describeModel, DEFAULT_MODELS, estimateCost } from './models.js';
+import { describeModel, DEFAULT_MODELS, estimateCost, lookupContextWindow } from './models.js';
 import { AppError, badRequest, upstream } from '../core/errors.js';
 import logger from '../core/logger.js';
 
@@ -135,6 +135,22 @@ export async function chatText(userId, opts = {}) {
     try {
       res = await call(stripped);
     } catch (err2) {
+      // baseURL 兼容：用户可能漏填 /v1
+      const status404 = Number(err2?.status || err2?.response?.status || 0) === 404
+        || /404|not found/i.test(String(err2?.message || ''));
+      if (status404 && !/\/v\d+/i.test(String(conf.baseUrl || '')) && String(conf.baseUrl || '').trim()) {
+        try {
+          const alt = makeClient({ ...conf, baseUrl: String(conf.baseUrl).replace(/\/+$/, '') + '/v1' });
+          const controller2 = new AbortController();
+          const timer2 = setTimeout(() => controller2.abort(), timeoutMs);
+          try {
+            res = await alt.chat.completions.create(stripped, { signal: controller2.signal, timeout: timeoutMs });
+          } finally { clearTimeout(timer2); }
+          return shapeCompletion(res, model, returnRaw);
+        } catch (errAlt) {
+          // 继续走后续兼容
+        }
+      }
       // 第三层兼容：部分模型不接受 max_tokens / temperature（如推理模型）
       const msg = String(err2?.message || err2?.error?.message || '');
       if (/max_tokens|max_completion_tokens|temperature|unsupported|invalid/i.test(msg)) {
@@ -155,9 +171,13 @@ export async function chatText(userId, opts = {}) {
     }
   }
 
-  const choice = res.choices?.[0];
+  return shapeCompletion(res, model, returnRaw);
+}
+
+function shapeCompletion(res, model, returnRaw = false) {
+  const choice = res?.choices?.[0];
   const text = choice?.message?.content ?? '';
-  const usage = usageOf(res.usage);
+  const usage = usageOf(res?.usage);
   const out = {
     text: typeof text === 'string' ? text : JSON.stringify(text),
     reasoning: choice?.message?.reasoning_content || null,
@@ -307,37 +327,121 @@ export async function embed(userId, input, { model } = {}) {
   }
 }
 
-/** 获取模型列表（含能力与上下文窗口） */
-export async function listModels(userId, service = 'chat') {
-  const conf = serviceConfig(userId, service);
-  const client = makeClient(conf);
-  try {
-    const res = await client.models.list();
-    const items = (res.data || []).map((m) => {
-      const desc = describeModel(m.id);
-      return { ...desc, ownedBy: m.owned_by || null };
-    });
-    items.sort((a, b) => a.id.localeCompare(b.id));
-    return { models: items, source: 'remote' };
-  } catch (err) {
-    log.warn('模型列表获取失败，返回内置候选', err?.message);
-    const fallback = DEFAULT_MODELS.filter((id) =>
-      service === 'embedding' ? /embed/i.test(id) : !/embed/i.test(id),
-    ).map((id) => ({ ...describeModel(id), ownedBy: null }));
-    return { models: fallback, source: 'fallback', warning: err?.message };
+/** baseURL 候选：用户可能填 https://api.x.com 或 https://api.x.com/v1 */
+export function baseUrlCandidates(baseUrl) {
+  const raw = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!raw) return ['https://api.openai.com/v1'];
+  const list = [];
+  if (/\/v\d+[a-z0-9-]*(\/|$)/i.test(raw)) list.push(raw);
+  else list.push(raw + '/v1', raw);
+  return [...new Set(list)];
+}
+
+function pickContextWindow(item) {
+  if (!item || typeof item !== 'object') return null;
+  const candidates = [
+    item.context_length, item.context_window, item.max_context_length, item.max_model_len,
+    item.max_input_tokens, item.top_provider?.context_length, item.metadata?.context_length,
+    item.limits?.context, item.config?.context_length,
+  ];
+  for (const v of candidates) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 1024) return n;
   }
+  return null;
+}
+
+export function parseModelListPayload(json) {
+  const arr = Array.isArray(json) ? json
+    : Array.isArray(json?.data) ? json.data
+    : Array.isArray(json?.models) ? json.models
+    : Array.isArray(json?.result) ? json.result
+    : null;
+  if (!arr) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of arr) {
+    const id = typeof item === 'string' ? item : (item?.id || item?.model || item?.name);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const desc = describeModel(id);
+    const remoteCtx = pickContextWindow(item);
+    const tableCtx = lookupContextWindow(id);
+    out.push({
+      ...desc,
+      contextWindow: remoteCtx || tableCtx || desc.contextWindow,
+      contextWindowSource: remoteCtx ? 'remote' : tableCtx ? 'table' : 'default',
+      ownedBy: item?.owned_by || item?.ownedBy || null,
+    });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+async function fetchModelsDirect(base, apiKey) {
+  const url = base.replace(/\/+$/, '') + '/models';
+  const res = await fetch(url, {
+    headers: {
+      authorization: `Bearer ${apiKey || 'sk-no-key'}`,
+      accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* 非 JSON 响应 */ }
+  return { url, status: res.status, ok: res.ok, json, body: text.slice(0, 200) };
+}
+
+/** 获取模型列表（含能力、上下文窗口与来源）。直接请求 /models，兼容无 /v1 的 baseURL */
+export async function listModels(userId, service = 'chat', overrides = null) {
+  const conf = { ...serviceConfig(userId, service), ...(overrides || {}) };
+  const attempts = [];
+  for (const base of baseUrlCandidates(conf.baseUrl)) {
+    try {
+      const r = await fetchModelsDirect(base, conf.apiKey);
+      attempts.push({ url: r.url, status: r.status });
+      const models = r.ok ? parseModelListPayload(r.json) : null;
+      if (models && models.length) {
+        return { models, source: 'remote', baseUrl: base, attempts };
+      }
+      if (r.ok) attempts[attempts.length - 1].warning = '响应中未发现模型数组';
+      else attempts[attempts.length - 1].warning = r.body || 'HTTP 错误';
+    } catch (err) {
+      attempts.push({ url: base + '/models', error: err?.message || String(err) });
+    }
+  }
+  log.warn('模型列表获取失败，返回内置候选', attempts);
+  const fallback = DEFAULT_MODELS.filter((id) =>
+    service === 'embedding' ? /embed/i.test(id) : !/embed/i.test(id),
+  ).map((id) => {
+    const tableCtx = lookupContextWindow(id);
+    const desc = describeModel(id);
+    return {
+      ...desc,
+      contextWindow: tableCtx || desc.contextWindow,
+      contextWindowSource: tableCtx ? 'table' : 'default',
+      ownedBy: null,
+    };
+  });
+  return {
+    models: fallback,
+    source: 'fallback',
+    warning: '无法从服务商获取模型列表，已显示内置候选；可直接手动填写模型名',
+    attempts,
+  };
 }
 
 /** 连通性测试 */
-export async function testConnection(userId, service = 'chat') {
+export async function testConnection(userId, service = 'chat', overrides = null) {
   const started = Date.now();
+  const confOverride = overrides || {};
   try {
     if (service === 'embedding') {
       const r = await embed(userId, 'cocoa connectivity test');
       return { ok: true, latencyMs: Date.now() - started, detail: `向量维度 ${r.vectors[0]?.length || 0}` };
     }
     if (service === 'stt' || service === 'tts') {
-      const conf = serviceConfig(userId, service);
+      const conf = { ...serviceConfig(userId, service), ...confOverride };
       const client = makeClient(conf);
       const res = await client.models.list();
       return {
@@ -346,7 +450,7 @@ export async function testConnection(userId, service = 'chat') {
         detail: `可用模型 ${res.data?.length || 0} 个`,
       };
     }
-    const model = resolveModel(userId, service === 'deepseek' ? 'search' : 'main');
+    const model = confOverride.model || resolveModel(userId, service === 'deepseek' ? 'search' : 'main');
     const r = await chatText(userId, {
       service: service === 'deepseek' ? 'deepseek' : 'chat',
       model,

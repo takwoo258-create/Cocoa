@@ -4,7 +4,17 @@
 import * as defaultProvider from './provider.js';
 
 export const SENTENCE_WAIT_MS = 30_000;
+export const SENTENCE_MAX_WAIT_MS = 60_000;
 export const SENTENCE_MAX_TOKENS = 4;
+
+/**
+ * 同一段连续输入的等待上限：每条新消息最多再等 30s，但从第一条未完成消息起算总等待不超过 60s。
+ * @returns {number} 毫秒时间戳
+ */
+export function sentenceWaitDueMs({ now = Date.now(), firstAt = null } = {}) {
+  const start = Number(firstAt) > 0 ? Number(firstAt) : Number(now);
+  return Math.min(Number(now) + SENTENCE_WAIT_MS, start + SENTENCE_MAX_WAIT_MS);
+}
 
 export const SENTENCE_SYSTEM_PROMPT = [
   '你是句子完整性判断器，只做一件事：判断用户这句话是否已经表达完整、可以自然地结束（不需要用户继续补充）。',
@@ -76,4 +86,4 @@ export function needsSentenceCheck({ kind = 'text', text = '', hasTranscript = f
   return false;
 }
 
-export default { checkSentenceComplete, cleanVerdict, needsSentenceCheck, SENTENCE_WAIT_MS };
+export default { checkSentenceComplete, cleanVerdict, needsSentenceCheck, sentenceWaitDueMs, SENTENCE_WAIT_MS, SENTENCE_MAX_WAIT_MS };

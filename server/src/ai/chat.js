@@ -15,15 +15,15 @@ import { get, run, getMeta } from '../db/index.js';
 import env from '../env.js';
 import logger from '../core/logger.js';
 import { badRequest, notFound } from '../core/errors.js';
-import { nowIso, uuid, clamp } from '../core/util.js';
+import { nowIso, uuid, clamp, sleep } from '../core/util.js';
 import { encryptText, decryptText, encryptJson, decryptJson } from '../core/crypto.js';
 import { broadcast } from '../realtime/hub.js';
 import { getCharacter, getSettings, ensureState, updateState, defaultCharacterId } from '../services/characters.js';
 import { getPrefs, getUserApi } from '../services/settings.js';
-import { enqueue, cancelJobs } from '../services/jobs.js';
+import { enqueue, cancelJobs, nextJob, jobPayload } from '../services/jobs.js';
 import { recordUsage } from './usage.js';
 import { parseReply, clampSendSec } from './reply.js';
-import { checkSentenceComplete, needsSentenceCheck, SENTENCE_WAIT_MS } from './sentence.js';
+import { checkSentenceComplete, needsSentenceCheck, sentenceWaitDueMs } from './sentence.js';
 import {
   ensureMainConversation,
   getConversation,
@@ -174,6 +174,11 @@ function runtime(userId, characterId) {
 
 export function resetRuntime() {
   runtimes.clear();
+}
+
+/** 该角色是否正在生成（看门狗据此避免重复触发） */
+export function isGenerating(userId, characterId) {
+  return Boolean(runtime(userId, characterId).busy);
 }
 
 function withLock(s, fn) {
@@ -596,6 +601,62 @@ async function handleParsedReply({ userId, characterId, conversation, state, par
   return sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply });
 }
 
+// ---------------- 回复可靠性（v1.0.1） ----------------
+
+export const STRICT_REPLY_INSTRUCTION = [
+  '上一次回复没有产生可发送的消息（空内容、只有思考过程或被截断）。',
+  '现在请严格重新输出一个 JSON 对象，content 必须是非空文本：',
+  '{"type":"message","content":"你要说的内容"}',
+  '不要输出思考过程、不要输出空字符串、不要使用代码块或额外解释。',
+].join('\n');
+
+export const FALLBACK_REPLY_TEXT = '我刚才有点走神，没接住你的话……可以再说一遍吗？';
+
+/** 该解析结果是否可以真正发给用户 */
+export function replyIsUsable(parsed, reason = 'user_message') {
+  if (!parsed) return false;
+  const content = String(parsed.content || '').trim();
+  const segments = Array.isArray(parsed.segments)
+    ? parsed.segments.filter((seg) => String(seg?.content || '').trim())
+    : [];
+  if (parsed.type === 'message') return Boolean(content || segments.length);
+  if (parsed.type === 'subjective') {
+    return ['active_timeout', 'active_reply'].includes(reason) && Boolean(content);
+  }
+  return false;
+}
+
+/** 是否需要重试：空内容 / 非 message 类型 / 截断 / 只有 reasoning */
+export function replyNeedsRetry(res, parsed, reason = 'user_message') {
+  if (!res) return true;
+  if (res.finishReason === 'length') return true;
+  const text = String(res.text || '').trim();
+  if (!text && String(res.reasoning || '').trim()) return true;
+  return !replyIsUsable(parsed, reason);
+}
+
+function broadcastTyping(userId, characterId, typing, stage = null) {
+  const event = { type: 'typing', characterId, typing: Boolean(typing) };
+  if (typing && stage) event.stage = stage;
+  broadcast(userId, event);
+}
+
+/** 主模型调用：provider 抛错时 1.5s 后重试一次，两次都失败则抛给上层广播 error */
+async function callMainModel({ prov, userId, characterId, messages, thinking, maxTokens = 1200 }) {
+  const request = { task: 'main', messages, temperature: 0.85, maxTokens, thinking, json: true };
+  try {
+    const res = await prov.chatText(userId, request);
+    recordUsage({ userId, characterId, kind: 'main', model: res?.model, usage: res?.usage || {}, cost: res?.cost });
+    return res;
+  } catch (err) {
+    logger.warn('对话模型调用失败，1.5 秒后重试一次', err?.message || err);
+    await sleep(1_500);
+    const res = await prov.chatText(userId, request);
+    recordUsage({ userId, characterId, kind: 'main', model: res?.model, usage: res?.usage || {}, cost: res?.cost });
+    return res;
+  }
+}
+
 async function generateOnce(opts, s) {
   const {
     userId,
@@ -628,7 +689,7 @@ async function generateOnce(opts, s) {
   const sleep = effectiveSleep(character, state, new Date());
 
   s.busy = true;
-  broadcast(userId, { type: 'typing', typing: true, characterId });
+  broadcastTyping(userId, characterId, true, 'replying');
   try {
     const summary = conversation.summary ? decryptText(userId, conversation.summary) : '';
     const memory = await loadMemoryContext(userId, characterId, triggerText);
@@ -658,16 +719,62 @@ async function generateOnce(opts, s) {
     messages.push(...history);
     if (extraInstruction) messages.push({ role: 'system', content: extraInstruction });
 
-    const res = await prov.chatText(userId, {
-      task: 'main',
+    let res = await callMainModel({
+      prov,
+      userId,
+      characterId,
       messages,
-      temperature: 0.85,
-      maxTokens: 1200,
       thinking: useThinking,
-      json: true,
     });
-    recordUsage({ userId, characterId, kind: 'main', model: res?.model, usage: res?.usage || {}, cost: res?.cost });
-    const parsed = parseReply(res?.text ?? '', { segmentEnabled });
+    let parsed = parseReply(res?.text ?? '', { segmentEnabled });
+    let retried = false;
+
+    if (replyNeedsRetry(res, parsed, reason)) {
+      logger.warn('模型回复为空或无效，使用严格指令重试一次', {
+        reason,
+        finishReason: res?.finishReason || null,
+        textLength: String(res?.text || '').length,
+        hasReasoning: Boolean(res?.reasoning),
+      });
+      try {
+        res = await prov.chatText(userId, {
+          task: 'main',
+          messages: [...messages, { role: 'system', content: STRICT_REPLY_INSTRUCTION }],
+          temperature: 0.7,
+          maxTokens: 2_000,
+          thinking: false,
+          json: true,
+        });
+        recordUsage({ userId, characterId, kind: 'main', model: res?.model, usage: res?.usage || {}, cost: res?.cost });
+        parsed = parseReply(res?.text ?? '', { segmentEnabled });
+        retried = true;
+      } catch (err) {
+        logger.warn('空回复重试失败，使用兜底文案', err?.message || err);
+      }
+    }
+
+    let usedReason = reason;
+    let fallback = false;
+    if (replyNeedsRetry(res, parsed, reason)) {
+      // 重试后仍不可用：绝不静默丢弃，落一条温和兜底消息
+      logger.error('模型连续两次未产出可用回复，写入兜底消息', {
+        reason,
+        finishReason: res?.finishReason || null,
+        rawText: String(res?.text || '').slice(0, 300),
+      });
+      fallback = true;
+      usedReason = 'fallback';
+      parsed = {
+        type: 'message',
+        content: FALLBACK_REPLY_TEXT,
+        segments: [{ content: FALLBACK_REPLY_TEXT, wait: 0 }],
+        devide: 1,
+        wait: 0,
+        parsed: false,
+        fallback: true,
+      };
+    }
+
     const out = await handleParsedReply({
       userId,
       characterId,
@@ -675,10 +782,18 @@ async function generateOnce(opts, s) {
       state,
       parsed,
       thinking: useThinking,
-      reason,
+      reason: usedReason,
       voiceReply,
     });
-    return { ...out, thinking: useThinking, model: res?.model || null, parsed, search: Boolean(search?.context) };
+    return {
+      ...out,
+      thinking: useThinking,
+      model: res?.model || null,
+      parsed,
+      search: Boolean(search?.context),
+      retried,
+      fallback,
+    };
   } catch (err) {
     logger.warn('对话生成失败', err?.message || err);
     broadcast(userId, {
@@ -690,7 +805,7 @@ async function generateOnce(opts, s) {
     return { ok: false, reason: 'generation_failed', error: err?.message || 'upstream_error', code: err?.code };
   } finally {
     s.busy = false;
-    broadcast(userId, { type: 'typing', typing: false, characterId });
+    broadcastTyping(userId, characterId, false);
     // 释放锁之后再处理排队消息（drain 内部会重新排队生成）
     Promise.resolve().then(() => drainPending({ userId, characterId })).catch(() => {});
   }
@@ -1001,27 +1116,44 @@ export async function submitUserMessage({
     };
   }
 
-  // 句子完整性检查：App 通道强制执行 30s 等待；OneBot 通道无异步补发能力，直接生成
+  // 句子完整性检查：App 通道强制执行 30s 等待（连续输入总等待上限 60s）；OneBot 直接生成
   let sentence = { complete: true, verdict: 'yes', failed: false };
+  let sentenceCapped = false;
   if (source !== 'onebot' && needsSentenceCheck({ kind: mediaKind, text, hasTranscript: media.hasTranscript })) {
+    const pendingSentence = nextJob(characterId, 'sentence_wait');
+    const pendingPayload = pendingSentence ? jobPayload(pendingSentence) : null;
+    // 同一段连续输入从第一条 incomplete 起算，总等待不超过 60s
+    const firstAt = Number(pendingPayload?.firstAt) > 0 ? Number(pendingPayload.firstAt) : Date.now();
     cancelJobs(characterId, 'sentence_wait');
+    broadcastTyping(userId, characterId, true, 'checking');
     sentence = await checkSentenceComplete(userId, text, { provider: prov });
     if (!sentence.complete) {
-      enqueue(
-        'sentence_wait',
-        new Date(Date.now() + SENTENCE_WAIT_MS).toISOString(),
-        { messageId: row.id },
-        { userId, characterId },
-      );
-      return {
-        accepted: true,
-        queued: true,
-        notice: null,
-        messageId: row.id,
-        userMessage,
-        reason: 'sentence_wait',
-        sentence,
-      };
+      const now = Date.now();
+      const due = sentenceWaitDueMs({ now, firstAt });
+      if (due <= now + 25) {
+        // 已达到 60s 总等待上限：不再排队，直接生成
+        sentenceCapped = true;
+        logger.debug('句子等待达到总上限，直接生成', { characterId, firstAt, now });
+      } else {
+        enqueue(
+          'sentence_wait',
+          new Date(due).toISOString(),
+          { messageId: row.id, firstAt, voiceReply: mediaKind === 'voice' },
+          { userId, characterId },
+        );
+        broadcastTyping(userId, characterId, true, 'waiting');
+        return {
+          accepted: true,
+          queued: true,
+          notice: null,
+          messageId: row.id,
+          userMessage,
+          reason: 'sentence_wait',
+          sentence,
+          firstAt,
+          dueAt: new Date(due).toISOString(),
+        };
+      }
     }
   }
 
@@ -1029,7 +1161,7 @@ export async function submitUserMessage({
     userId,
     characterId,
     conversationId: conversation.id,
-    reason: source === 'onebot' ? 'onebot' : 'user_message',
+    reason: source === 'onebot' ? 'onebot' : sentenceCapped ? 'sentence_wait' : 'user_message',
     triggerText: text || merged,
     provider: prov,
     voiceReply: mediaKind === 'voice',
@@ -1042,6 +1174,7 @@ export async function submitUserMessage({
     messageId: row.id,
     userMessage,
     reason: 'generating',
+    ...(sentenceCapped ? { capped: true } : {}),
     sentence,
     waitForReply,
   };

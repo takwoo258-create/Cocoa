@@ -7,8 +7,18 @@ import {
 import { listModels, testConnection, resolveModel } from '../ai/provider.js';
 import { describeModel } from '../ai/models.js';
 
-const SERVICES = ['chat', 'embedding', 'deepseek', 'stt', 'tts', 'search'];
+const SERVICES = ['chat', 'embedding', 'deepseek', 'stt', 'tts'];
+const HIDDEN_SERVICES = ['search'];
 const KEEP = new Set(['****', '••••••••', '[REDACTED]', 'unchanged']);
+
+// 允许前端用未保存的草稿配置直接请求模型列表/连通测试
+function pickOverrides(body) {
+  const out = {};
+  if (typeof body?.baseUrl === 'string') out.baseUrl = body.baseUrl.trim();
+  if (typeof body?.apiKey === 'string' && body.apiKey && !KEEP.has(body.apiKey)) out.apiKey = body.apiKey.trim();
+  if (typeof body?.model === 'string') out.model = body.model.trim();
+  return Object.keys(out).length ? out : null;
+}
 
 function maskApi(cfg) {
   const out = {};
@@ -65,9 +75,9 @@ export default function register() {
         embedding: Boolean(cfg.embedding.apiKey),
         stt: Boolean(cfg.stt.apiKey),
         tts: Boolean(cfg.tts.apiKey),
-        search: Boolean(cfg.search.apiKey),
+        search: Boolean(cfg.search.apiKey), // 兼容字段：search/fetch 复用 deepseek，不再暴露配置项
       },
-      defaults: { preferences: DEFAULT_PREFS, services: SERVICES },
+      defaults: { preferences: DEFAULT_PREFS, services: SERVICES, note: 'search/fetch 复用 DeepSeek 配置，无需单独设置模型' },
     });
   });
 
@@ -85,7 +95,8 @@ export default function register() {
     '/models',
     asyncHandler(async (req, res) => {
       const service = SERVICES.includes(req.body?.service) ? req.body.service : 'chat';
-      const result = await listModels(req.userId, service);
+      const overrides = pickOverrides(req.body);
+      const result = await listModels(req.userId, service, overrides);
       res.json(result);
     }),
   );
@@ -94,7 +105,8 @@ export default function register() {
     '/test',
     asyncHandler(async (req, res) => {
       const service = SERVICES.includes(req.body?.service) ? req.body.service : 'chat';
-      const result = await testConnection(req.userId, service);
+      const overrides = pickOverrides(req.body);
+      const result = await testConnection(req.userId, service, overrides);
       res.status(result.ok ? 200 : 502).json(result);
     }),
   );
@@ -116,7 +128,18 @@ export default function register() {
     asyncHandler(async (req, res) => {
       const id = String(req.query.id || '');
       if (!id) throw badRequest('缺少模型 id', 'model_required');
-      res.json({ model: describeModel(id), routed: resolveModel(req.userId, String(req.query.task || 'main')) });
+      const { lookupContextWindow } = await import('../ai/models.js');
+      const desc = describeModel(id);
+      const tableCtx = lookupContextWindow(id);
+      res.json({
+        model: {
+          ...desc,
+          contextWindow: tableCtx || desc.contextWindow,
+          contextWindowSource: tableCtx ? 'table' : 'default',
+          override: getPrefs(req.userId).contextLimits?.[id] || null,
+        },
+        routed: resolveModel(req.userId, String(req.query.task || 'main')),
+      });
     }),
   );
 

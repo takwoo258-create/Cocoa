@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../models/config_models.dart';
 import '../models/user.dart';
+import '../models/version_info.dart';
 import '../services/admin_service.dart';
 import '../services/auth_service.dart';
 import '../services/book_service.dart';
@@ -10,7 +11,9 @@ import '../services/chat_service.dart';
 import '../services/config_service.dart';
 import '../services/media_service.dart';
 import '../services/memory_service.dart';
+import '../services/social_service.dart';
 import '../services/stats_service.dart';
+import '../services/version_service.dart';
 import 'api_client.dart';
 import 'constants.dart';
 import 'global.dart';
@@ -37,6 +40,8 @@ class AppState extends ChangeNotifier {
   late BookService bookService;
   late StatsService statsService;
   late AdminService adminService;
+  late VersionService versionService;
+  late SocialService socialService;
 
   User? user;
   AppConfig? config;
@@ -50,6 +55,12 @@ class AppState extends ChangeNotifier {
   Map<String, dynamic> preferences = <String, dynamic>{};
   String? activeCharacterId;
 
+  /// v1.0.1：版本推送状态。
+  VersionCheckResult? versionCheck;
+  String? ignoredVersionTag;
+  bool versionChecking = false;
+  DateTime? _lastVersionCheckAt;
+
   /// 由根 Widget 注入：会话失效时回到登录页。
   void Function()? onNeedLogin;
 
@@ -62,6 +73,14 @@ class AppState extends ChangeNotifier {
   Map<String, String> get modelRouting => asStringMap(preferences['modelRouting']);
   int get hardTokens => asInt(asMap(preferences['limits'])['hardTokens']);
   int get softTokens => asInt(asMap(preferences['limits'])['softTokens']);
+  bool get limitsEnabled => asBool(asMap(preferences['limits'])['enabled'], true);
+
+  bool get updateAvailable {
+    final VersionCheckResult? r = versionCheck;
+    if (r == null || !r.updateAvailable) return false;
+    final String tag = r.latest.tag;
+    return tag.isEmpty || tag != ignoredVersionTag;
+  }
 
   void _buildApi(String url, String? tk) {
     api = ApiClient(
@@ -81,6 +100,8 @@ class AppState extends ChangeNotifier {
     bookService = BookService(api);
     statsService = StatsService(api);
     adminService = AdminService(api);
+    versionService = VersionService(api);
+    socialService = SocialService(api);
   }
 
   Future<void> boot() async {
@@ -88,6 +109,7 @@ class AppState extends ChangeNotifier {
     token = await storage.readToken();
     debugMode = await storage.readDebug();
     thinkingMode = await storage.readThinking();
+    ignoredVersionTag = await storage.readIgnoredVersionTag();
     _buildApi(baseUrl, token);
 
     if (token != null && token!.isNotEmpty) {
@@ -102,6 +124,36 @@ class AppState extends ChangeNotifier {
       }
     }
     booting = false;
+    notifyListeners();
+    // 公开接口，不阻塞启动；主页也会在加载时再触发一次（10 分钟节流）。
+    checkVersion();
+  }
+
+  /// GET /api/version/latest?current=1.0.1。
+  Future<void> checkVersion({bool force = false}) async {
+    if (versionChecking) return;
+    final DateTime now = DateTime.now();
+    if (!force &&
+        _lastVersionCheckAt != null &&
+        now.difference(_lastVersionCheckAt!) < const Duration(minutes: 10)) {
+      return;
+    }
+    versionChecking = true;
+    notifyListeners();
+    try {
+      versionCheck = await versionService.check(current: kAppVersion);
+      _lastVersionCheckAt = DateTime.now();
+    } catch (_) {
+      // 版本检查失败不打扰用户
+    } finally {
+      versionChecking = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> ignoreVersion(String tag) async {
+    ignoredVersionTag = tag;
+    await storage.writeIgnoredVersionTag(tag);
     notifyListeners();
   }
 

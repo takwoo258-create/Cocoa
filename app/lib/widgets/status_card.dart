@@ -128,3 +128,87 @@ class CharacterStatusCard extends StatelessWidget {
     );
   }
 }
+
+/// v1.0.1：聊天页顶部紧凑状态条，点击进入独立角色状态页。
+class CharacterStatusBar extends StatelessWidget {
+  const CharacterStatusBar({
+    super.key,
+    required this.characterName,
+    required this.state,
+    this.onTap,
+  });
+
+  final String characterName;
+  final CharacterState state;
+  final VoidCallback? onTap;
+
+  String get _summary {
+    final List<String> parts = <String>[
+      if (state.motion.trim().isNotEmpty) state.motion.trim(),
+      if (state.mood.trim().isNotEmpty) state.mood.trim(),
+      if (state.resting) state.sleepLabel,
+    ];
+    if (parts.isEmpty) return '正在发呆…';
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          gradient: kRoseGradient,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: AppColors.rose.withAlpha(40),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          children: <Widget>[
+            Text(state.moodEmoji, style: const TextStyle(fontSize: 15)),
+            const SizedBox(width: 6),
+            Text(
+              characterName,
+              style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: AppColors.ink,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _summary,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: AppColors.ink),
+              ),
+            ),
+            if (state.resting)
+              Container(
+                margin: const EdgeInsets.only(right: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.white.withAlpha(150),
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                child: Text(
+                  state.sleepLabel,
+                  style: const TextStyle(fontSize: 9, color: AppColors.ink),
+                ),
+              ),
+            const Icon(Icons.chevron_right, size: 16, color: AppColors.ink),
+          ],
+        ),
+      ),
+    );
+  }
+}

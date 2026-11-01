@@ -93,9 +93,10 @@ export function createMockOpenAI() {
         return send(res, 200, {
           object: 'list',
           data: [
-            { id: 'gpt-4o-mini', object: 'model', owned_by: 'mock' },
-            { id: 'gpt-4o', object: 'model', owned_by: 'mock' },
-            { id: 'deepseek-chat', object: 'model', owned_by: 'mock' },
+            { id: 'gpt-4o-mini', object: 'model', owned_by: 'mock', context_length: 128000 },
+            { id: 'gpt-4o', object: 'model', owned_by: 'mock', context_length: 128000 },
+            { id: 'deepseek-chat', object: 'model', owned_by: 'mock', context_length: 131072 },
+            { id: 'custom-long', object: 'model', owned_by: 'mock', context_window: 64000 },
             { id: 'text-embedding-3-small', object: 'model', owned_by: 'mock' },
             { id: 'whisper-1', object: 'model', owned_by: 'mock' },
           ],

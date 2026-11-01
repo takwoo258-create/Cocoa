@@ -71,6 +71,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
           'statusIntervalMin': _settings.statusIntervalMin,
           'activeReply': _settings.activeReply,
           'timezone': _settings.timezone,
+          'qzoneEnabled': _settings.qzoneEnabled,
         },
       );
       if (!mounted) return;
@@ -451,6 +452,16 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
                 }),
                 const Text(
                   '开启后角色会在等待期结束后主动追问或发来消息。',
+                  style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                ),
+                const Divider(height: 14),
+                _bubble('允许角色发 QQ 动态', _settings.qzoneEnabled, (bool v) {
+                  setState(() {
+                    _settings = _settings.copyWith(qzoneEnabled: v);
+                  });
+                }),
+                const Text(
+                  '开启后角色可把创作/阅读感想以动态形式发到绑定的 QQ 空间（需管理员配置 NapCat）。',
                   style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
                 ),
               ],

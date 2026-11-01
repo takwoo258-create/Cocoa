@@ -68,6 +68,12 @@ class ConfigService {
     if (model is Map) {
       return ModelInfo.fromJson(asMap(model));
     }
+    // v1.0.1：兼容扁平响应 { id?, contextWindow, contextWindowSource, override }
+    if (m.containsKey('contextWindow') ||
+        m.containsKey('contextWindowSource') ||
+        m.containsKey('override')) {
+      return ModelInfo.fromJson(m);
+    }
     return null;
   }
 

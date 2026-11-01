@@ -10,6 +10,7 @@ import '../widgets/common.dart';
 import 'api_setup_dialog.dart';
 import 'character_edit_page.dart';
 import 'character_settings_page.dart';
+import 'character_status_page.dart';
 import 'chat_page.dart';
 import 'memory_page.dart';
 
@@ -98,6 +99,14 @@ class CharacterListPageState extends State<CharacterListPage> {
   Future<void> _openMemory(Character c) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => MemoryPage(character: c)),
+    );
+  }
+
+  Future<void> _openStatus(Character c) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CharacterStatusPage(character: c),
+      ),
     );
   }
 
@@ -396,6 +405,14 @@ class CharacterListPageState extends State<CharacterListPage> {
               onTap: () {
                 Navigator.of(ctx).pop();
                 _openSettings(c);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.monitor_heart_outlined),
+              title: const Text('角色状态'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _openStatus(c);
               },
             ),
             ListTile(

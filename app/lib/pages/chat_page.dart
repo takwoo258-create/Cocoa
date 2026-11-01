@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart' as rec;
 
 import '../core/app_state.dart';
+import '../core/constants.dart';
 import '../core/global.dart';
 import '../core/json_utils.dart';
 import '../core/theme.dart';
@@ -19,6 +20,7 @@ import '../widgets/context_gauge.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/status_card.dart';
 import 'character_settings_page.dart';
+import 'character_status_page.dart';
 import 'memory_page.dart';
 
 class ChatPage extends StatefulWidget {
@@ -41,6 +43,7 @@ class _ChatPageState extends State<ChatPage> {
   bool _loading = true;
   bool _sending = false;
   bool _typing = false;
+  String? _typingStage;
   bool _recording = false;
   bool _connected = false;
   DateTime? _recordStartedAt;
@@ -133,7 +136,13 @@ class _ChatPageState extends State<ChatPage> {
         _enqueueAgent(msg);
         break;
       case 'typing':
-        setState(() => _typing = asBool(d['typing']));
+        final String cid = asString(d['characterId']);
+        if (cid.isNotEmpty && cid != widget.character.id) break;
+        final bool typing = asBool(d['typing']);
+        setState(() {
+          _typing = typing;
+          _typingStage = typing ? asStringOrNull(d['stage']) : null;
+        });
         break;
       case 'notice':
         _appendNotice(asString(d['content']));
@@ -191,7 +200,10 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _enqueueAgent(ChatMessage msg) {
-    setState(() => _typing = false);
+    setState(() {
+      _typing = false;
+      _typingStage = null;
+    });
     final int? segments = msg.segments;
     if (segments != null && segments > 1) {
       _segmentQueue.add(msg);
@@ -277,7 +289,12 @@ class _ChatPageState extends State<ChatPage> {
     String? mediaId,
   }) async {
     final AppState state = AppScope.read(context);
-    setState(() => _sending = true);
+    setState(() {
+      _sending = true;
+      // v1.0.1：发送即显示「正在输入…」，避免用户以为没有反应。
+      _typing = true;
+      _typingStage = null;
+    });
     try {
       final SendMessageResult r = await state.chatService.send(
         characterId: widget.character.id,
@@ -308,14 +325,25 @@ class _ChatPageState extends State<ChatPage> {
             compressing: true,
           );
         }
+        if (!r.accepted) {
+          _typing = false;
+          _typingStage = null;
+        }
       });
       if (r.notice != null && r.notice!.isNotEmpty) {
         _appendNotice(r.notice!);
       }
-      if (r.accepted) setState(() => _typing = true);
+      if (r.accepted) {
+        setState(() {
+          _typing = true;
+          _typingStage = null;
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
+        _typing = false;
+        _typingStage = null;
         final int i = _messages.indexWhere((ChatMessage m) => m.id == local.id);
         if (i >= 0) {
           _messages[i] = _messages[i].copyWith(pending: false);
@@ -585,7 +613,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Widget _messageList() {
     if (_loading) return const LoadingView(text: '加载对话…');
-    if (_messages.isEmpty) {
+    if (_messages.isEmpty && !_typing) {
       return EmptyView(
         text: '还没有聊过天\n发一条消息，开始和${widget.character.name}的日常吧',
         icon: Icons.chat_bubble_outline,
@@ -609,9 +637,17 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  String get _typingLabel {
+    final String? stage = _typingStage;
+    if (stage != null && kTypingStageLabels.containsKey(stage)) {
+      return '${widget.character.name}${kTypingStageLabels[stage]}';
+    }
+    return '${widget.character.name}正在输入…';
+  }
+
   Widget _typingBubble() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 60, 4),
+      padding: const EdgeInsets.fromLTRB(16, 4, 40, 4),
       child: Row(
         children: <Widget>[
           Container(
@@ -620,39 +656,18 @@ class _ChatPageState extends State<ChatPage> {
               color: AppColors.bubbleAgent,
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                _dot(0),
-                const SizedBox(width: 3),
-                _dot(120),
-                const SizedBox(width: 3),
-                _dot(240),
-              ],
-            ),
+            child: const _TypingDots(),
           ),
           const SizedBox(width: 6),
-          Text(
-            '${widget.character.name}正在输入',
-            style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
+          Flexible(
+            child: Text(
+              _typingLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
+            ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _dot(int delayMs) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0.35, end: 1),
-      duration: Duration(milliseconds: 600 + delayMs),
-      curve: Curves.easeInOut,
-      builder: (BuildContext c, double v, Widget? child) => Container(
-        width: 5,
-        height: 5,
-        decoration: BoxDecoration(
-          color: AppColors.cocoa.withAlpha((v * 180).round()),
-          shape: BoxShape.circle,
-        ),
       ),
     );
   }
@@ -714,15 +729,94 @@ class _ChatPageState extends State<ChatPage> {
       ),
       body: Column(
         children: <Widget>[
-          CharacterStatusCard(
+          CharacterStatusBar(
             characterName: widget.character.name,
             state: _state,
+            onTap: _openStatusPage,
           ),
           if (_state.resting) _sleepBar(),
           Expanded(child: _messageList()),
           _inputBar(),
         ],
       ),
+    );
+  }
+
+  Future<void> _openStatusPage() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CharacterStatusPage(
+          character: widget.character,
+          initialState: _state,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    final AppState state = AppScope.read(context);
+    try {
+      final CharacterState latest =
+          await state.characterService.getState(widget.character.id);
+      if (mounted) setState(() => _state = latest);
+    } catch (_) {
+      // 状态页已刷新过，失败时保留原状态
+    }
+  }
+}
+
+/// 三点循环动画（typing 指示）。
+class _TypingDots extends StatefulWidget {
+  const _TypingDots();
+
+  @override
+  State<_TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<_TypingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (BuildContext context, Widget? child) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List<Widget>.generate(3, (int i) {
+            final double t = (_controller.value + i * 0.22) % 1.0;
+            final double alpha = 0.25 + 0.75 * (1 - (t - 0.5).abs() * 2);
+            return Padding(
+              padding: EdgeInsets.only(right: i == 2 ? 0 : 4),
+              child: Transform.translate(
+                offset: Offset(0, -2 * (alpha - 0.25)),
+                child: Container(
+                  width: 5,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: AppColors.cocoa.withAlpha((alpha * 220).round()),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+            );
+          }),
+        );
+      },
     );
   }
 }

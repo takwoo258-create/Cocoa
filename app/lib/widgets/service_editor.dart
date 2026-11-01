@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/app_state.dart';
 import '../core/global.dart';
+import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../models/config_models.dart';
 import 'capability_icons.dart';
 
 /// 单个服务的配置编辑器：地址 / 密钥 / 模型 / 测试连接 / 模型列表（带能力图标）。
+/// v1.0.1：获取模型列表前强制保存；远端失败时展示 warning/attempts/重试/手动模型名；
+/// 支持手动上下文长度覆盖（preferences.contextLimits）。
 class ServiceEditor extends StatefulWidget {
   const ServiceEditor({
     super.key,
@@ -34,6 +38,7 @@ class ServiceEditorState extends State<ServiceEditor> {
   late final TextEditingController _keyCtrl;
   late final TextEditingController _modelCtrl;
   late final TextEditingController _voiceCtrl;
+  late final TextEditingController _ctxCtrl;
   bool _obscureKey = true;
   bool _busy = false;
   bool _clearKey = false;
@@ -41,6 +46,7 @@ class ServiceEditorState extends State<ServiceEditor> {
   bool _statusOk = false;
   List<ModelInfo> _models = <ModelInfo>[];
   ModelInfo? _info;
+  String _listWarning = '';
 
   @override
   void initState() {
@@ -51,13 +57,38 @@ class ServiceEditorState extends State<ServiceEditor> {
     _keyCtrl = TextEditingController();
     _modelCtrl = TextEditingController(text: c.model);
     _voiceCtrl = TextEditingController(text: c.voice);
+    _ctxCtrl = TextEditingController();
     if (_baseCtrl.text.isEmpty && widget.defaultBaseUrl.isNotEmpty) {
       _baseCtrl.text = widget.defaultBaseUrl;
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadModelInfo());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadModelInfo();
+      _loadContextLimit();
+    });
   }
 
-  /// 当前模型能力（SVG 图标：文本/图片/语音 + 上下文窗口）。
+  @override
+  void dispose() {
+    _baseCtrl.dispose();
+    _keyCtrl.dispose();
+    _modelCtrl.dispose();
+    _voiceCtrl.dispose();
+    _ctxCtrl.dispose();
+    super.dispose();
+  }
+
+  bool get _contextEditable =>
+      widget.service == 'chat' || widget.service == 'embedding';
+
+  void _setStatus(String text, bool ok) {
+    if (!mounted) return;
+    setState(() {
+      _status = text;
+      _statusOk = ok;
+    });
+  }
+
+  /// 当前模型能力（SVG 图标：文本/图片/语音 + 上下文窗口 + 来源）。
   Future<void> _loadModelInfo({String? id}) async {
     final String modelId = (id ?? _modelCtrl.text).trim();
     if (modelId.isEmpty) {
@@ -73,21 +104,63 @@ class ServiceEditorState extends State<ServiceEditor> {
     }
   }
 
-  @override
-  void dispose() {
-    _baseCtrl.dispose();
-    _keyCtrl.dispose();
-    _modelCtrl.dispose();
-    _voiceCtrl.dispose();
-    super.dispose();
+  void _loadContextLimit() {
+    final Map<String, dynamic> limits =
+        asMap(widget.state.preferences['contextLimits']);
+    final String model = _modelCtrl.text.trim();
+    final dynamic value =
+        model.isNotEmpty ? limits[model] : limits['default'];
+    _ctxCtrl.text = value == null ? '' : value.toString();
   }
 
-  void _setStatus(String text, bool ok) {
-    if (!mounted) return;
-    setState(() {
-      _status = text;
-      _statusOk = ok;
+  Future<void> _saveContextLimit({required bool asDefault}) async {
+    final int? value = int.tryParse(_ctxCtrl.text.trim());
+    if (value == null || value <= 0) {
+      _setStatus('请输入大于 0 的上下文长度', false);
+      return;
+    }
+    final String model = _modelCtrl.text.trim();
+    if (!asDefault && model.isEmpty) {
+      _setStatus('请先选择或填写模型名', false);
+      return;
+    }
+    final Map<String, dynamic> limits = Map<String, dynamic>.from(
+      asMap(widget.state.preferences['contextLimits']),
+    );
+    if (asDefault) {
+      limits['default'] = value;
+    } else {
+      limits[model] = value;
+    }
+    await widget.state.savePreferences(<String, dynamic>{
+      'contextLimits': limits,
     });
+    await _loadModelInfo();
+    if (mounted) {
+      _setStatus(
+        asDefault ? '默认上下文已设为 $value' : '$model 上下文已设为 $value',
+        true,
+      );
+    }
+  }
+
+  Future<void> _clearContextLimit({required bool asDefault}) async {
+    final String model = _modelCtrl.text.trim();
+    final Map<String, dynamic> limits = Map<String, dynamic>.from(
+      asMap(widget.state.preferences['contextLimits']),
+    );
+    // 后端 preferences 为深合并：用 null 覆盖才能删除已有覆盖值
+    if (asDefault) {
+      limits['default'] = null;
+    } else if (model.isNotEmpty) {
+      limits[model] = null;
+    }
+    await widget.state.savePreferences(<String, dynamic>{
+      'contextLimits': limits,
+    });
+    _ctxCtrl.clear();
+    await _loadModelInfo();
+    if (mounted) _setStatus('已清除上下文覆盖', true);
   }
 
   Future<bool> save({bool silent = false}) async {
@@ -144,40 +217,112 @@ class ServiceEditorState extends State<ServiceEditor> {
     }
   }
 
+  /// v1.0.1 关键修复：后端只读已保存配置，必须先 PUT 当前 baseUrl/apiKey/model 再取列表。
   Future<void> _loadModels() async {
-    final bool ok = await save(silent: true);
-    if (!ok) return;
     if (mounted) setState(() => _busy = true);
     try {
-      final ModelListResult r =
-          await widget.state.configService.listModels(widget.service);
-      setState(() => _models = r.models);
-      if (!mounted) return;
-      if (_models.isEmpty) {
-        _setStatus('未获取到模型列表，可直接手填模型名', false);
+      final bool saved = await save(silent: true);
+      if (!saved) {
+        _setStatus('保存当前配置失败，无法获取模型列表', false);
         return;
       }
-      final ModelInfo? picked = await showModalBottomSheet<ModelInfo>(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: AppColors.cream,
-        builder: (BuildContext ctx) => _ModelSheet(
-          models: _models,
-          current: _modelCtrl.text.trim(),
-          source: r.source,
-        ),
-      );
-      if (picked != null) {
+      final ModelListResult r =
+          await widget.state.configService.listModels(widget.service);
+      if (!mounted) return;
+      setState(() {
+        _models = r.models;
+        _listWarning = r.warning;
+      });
+
+      final String sheetWarning = r.isFallback
+          ? (r.warning.isEmpty
+              ? '远端 /models 未返回结果，以下为后端内置候选模型'
+              : r.warning)
+          : '';
+
+      bool pickedSomething = false;
+      while (mounted) {
+        final String? action = await showModalBottomSheet<String>(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: AppColors.cream,
+          builder: (BuildContext ctx) => _ModelSheet(
+            models: _models,
+            current: _modelCtrl.text.trim(),
+            source: r.source,
+            warning: sheetWarning,
+            attempts: r.attempts,
+          ),
+        );
+        if (action == null) break;
+        if (action == '__retry__') {
+          await _loadModels();
+          return;
+        }
+        if (action == '__manual__') {
+          await _manualModelInput();
+          break;
+        }
+        final ModelInfo picked = _models.firstWhere(
+          (ModelInfo m) => m.id == action,
+          orElse: () => ModelInfo(id: action),
+        );
         _modelCtrl.text = picked.id;
         setState(() => _info = picked);
-        await save();
-        _setStatus('已选择 ${picked.id}', true);
+        await save(silent: true);
+        _loadContextLimit();
+        await _loadModelInfo(id: picked.id);
+        if (mounted) _setStatus('已选择 ${picked.id}', true);
+        pickedSomething = true;
+        break;
+      }
+      if (_listWarning.isNotEmpty && !pickedSomething) {
+        _setStatus(_listWarning, false);
+      } else if (_models.isEmpty && !pickedSomething) {
+        _setStatus('未获取到模型列表，可点击「手动输入模型名」', false);
       }
     } catch (e) {
       _setStatus('获取模型列表失败：$e', false);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _manualModelInput() async {
+    final TextEditingController ctrl =
+        TextEditingController(text: _modelCtrl.text.trim());
+    final String? value = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('手动输入模型名'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '例如 gpt-4o-mini / deepseek-chat',
+            helperText: '按网关或服务商实际模型 ID 填写',
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+            child: const Text('使用'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (value == null || value.isEmpty) return;
+    _modelCtrl.text = value;
+    setState(() => _info = null);
+    await save(silent: true);
+    _loadContextLimit();
+    await _loadModelInfo(id: value);
+    if (mounted) _setStatus('已使用模型 $value', true);
   }
 
   InputDecoration _dec(String hint) => InputDecoration(
@@ -208,6 +353,71 @@ class ServiceEditorState extends State<ServiceEditor> {
     );
   }
 
+  Widget _smallTextButton(String text, VoidCallback? onPressed) {
+    return TextButton(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        padding: EdgeInsets.zero,
+        minimumSize: const Size(0, 22),
+        textStyle: const TextStyle(fontSize: 11),
+      ),
+      child: Text(text),
+    );
+  }
+
+  Widget _contextSection() {
+    if (!_contextEditable) return const SizedBox.shrink();
+    final String sourceLabel = _info == null
+        ? ''
+        : (_info!.contextSourceLabel.isEmpty
+            ? ''
+            : ' · 来源 ${_info!.contextSourceLabel}');
+    final int? override = _info?.contextOverride;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _label(
+          '上下文长度（可选覆盖）',
+          trailing: _smallTextButton('设为默认', () {
+            _saveContextLimit(asDefault: true);
+          }),
+        ),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: TextField(
+                controller: _ctxCtrl,
+                keyboardType: TextInputType.number,
+                inputFormatters: <TextInputFormatter>[
+                  FilteringTextInputFormatter.digitsOnly,
+                ],
+                decoration: _dec('例如 128000，留空使用模型窗口'),
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            IconButton(
+              tooltip: '保存为当前模型覆盖',
+              icon: const Icon(Icons.check_circle_outline, size: 20),
+              onPressed: () => _saveContextLimit(asDefault: false),
+            ),
+            IconButton(
+              tooltip: '清除覆盖',
+              icon: const Icon(Icons.restart_alt, size: 20),
+              onPressed: () => _clearContextLimit(asDefault: false),
+            ),
+          ],
+        ),
+        Text(
+          _info == null
+              ? '模型窗口未知；可手动填写覆盖值。'
+              : '模型窗口 ${_info!.contextLabel}$sourceLabel'
+                  '${override != null && override > 0 ? ' · 已覆盖 $override' : ''}',
+          style: const TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ServiceConfig current =
@@ -227,19 +437,11 @@ class ServiceEditorState extends State<ServiceEditor> {
         _label(
           'API Key',
           trailing: current.apiKeySet
-              ? TextButton(
-                  onPressed: () {
-                    _keyCtrl.clear();
-                    setState(() => _clearKey = true);
-                    showToast('保存后将清除已保存的密钥');
-                  },
-                  style: TextButton.styleFrom(
-                    padding: EdgeInsets.zero,
-                    minimumSize: const Size(0, 20),
-                    textStyle: const TextStyle(fontSize: 11),
-                  ),
-                  child: const Text('清除密钥'),
-                )
+              ? _smallTextButton('清除密钥', () {
+                  _keyCtrl.clear();
+                  setState(() => _clearKey = true);
+                  showToast('保存后将清除已保存的密钥');
+                })
               : null,
         ),
         TextField(
@@ -261,7 +463,10 @@ class ServiceEditorState extends State<ServiceEditor> {
           controller: _modelCtrl,
           decoration: _dec('例如 gpt-4o-mini / deepseek-chat'),
           style: const TextStyle(fontSize: 13),
-          onSubmitted: (String v) => _loadModelInfo(id: v),
+          onSubmitted: (String v) {
+            _loadModelInfo(id: v);
+            _loadContextLimit();
+          },
         ),
         if (_info != null)
           Padding(
@@ -274,16 +479,20 @@ class ServiceEditorState extends State<ServiceEditor> {
                   showLabels: true,
                 ),
                 const SizedBox(width: 10),
-                Text(
-                  _info!.contextLabel,
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    color: AppColors.inkSoft,
+                Flexible(
+                  child: Text(
+                    '${_info!.contextLabel}'
+                    '${_info!.contextSourceLabel.isEmpty ? '' : ' · ${_info!.contextSourceLabel}'}',
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      color: AppColors.inkSoft,
+                    ),
                   ),
                 ),
               ],
             ),
           ),
+        _contextSection(),
         if (widget.showVoice) ...<Widget>[
           _label('音色 voice（TTS）'),
           TextField(
@@ -336,6 +545,7 @@ class ServiceEditorState extends State<ServiceEditor> {
         if (_status != null) ...<Widget>[
           const SizedBox(height: 8),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Icon(
                 _statusOk ? Icons.check_circle_outline : Icons.error_outline,
@@ -348,6 +558,7 @@ class ServiceEditorState extends State<ServiceEditor> {
                   _status!,
                   style: TextStyle(
                     fontSize: 11.5,
+                    height: 1.4,
                     color: _statusOk ? AppColors.success : AppColors.danger,
                   ),
                 ),
@@ -355,21 +566,41 @@ class ServiceEditorState extends State<ServiceEditor> {
             ],
           ),
         ],
+        if (_listWarning.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            '提示：$_listWarning',
+            style: const TextStyle(fontSize: 10.5, color: AppColors.warn),
+          ),
+        ],
+        if (widget.service == 'deepseek')
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              '搜索 / 网页抓取复用该 DeepSeek 配置，无需单独设置 search 服务。',
+              style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+            ),
+          ),
       ],
     );
   }
 }
 
+/// 模型选择面板：warning / attempts / 手动输入 / 重试 / 上下文来源。
 class _ModelSheet extends StatefulWidget {
   const _ModelSheet({
     required this.models,
     required this.current,
     required this.source,
+    required this.warning,
+    required this.attempts,
   });
 
   final List<ModelInfo> models;
   final String current;
   final String source;
+  final String warning;
+  final List<Map<String, dynamic>> attempts;
 
   @override
   State<_ModelSheet> createState() => _ModelSheetState();
@@ -377,6 +608,16 @@ class _ModelSheet extends StatefulWidget {
 
 class _ModelSheetState extends State<_ModelSheet> {
   String _query = '';
+  bool _showAttempts = false;
+
+  String _attemptText(Map<String, dynamic> a) {
+    final String url = asString(a['url']);
+    final String error = asString(a['error']);
+    final dynamic status = a['status'];
+    return status == null
+        ? '$url${error.isEmpty ? '' : ' · $error'}'
+        : '$url · HTTP $status';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -386,7 +627,7 @@ class _ModelSheetState extends State<_ModelSheet> {
         .toList();
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
@@ -398,7 +639,7 @@ class _ModelSheetState extends State<_ModelSheet> {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  '共 ${widget.models.length} 个',
+                  '共 ${widget.models.length} 个 · 来源 ${widget.source}',
                   style: const TextStyle(fontSize: 11, color: AppColors.inkSoft),
                 ),
                 const Spacer(),
@@ -408,6 +649,75 @@ class _ModelSheetState extends State<_ModelSheet> {
                 ),
               ],
             ),
+            if (widget.warning.isNotEmpty)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.warn.withAlpha(24),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.warn.withAlpha(110)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        const Icon(Icons.warning_amber_rounded,
+                            size: 15, color: AppColors.warn),
+                        const SizedBox(width: 6),
+                        const Expanded(
+                          child: Text(
+                            '未能从远端获取模型列表',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.warn,
+                            ),
+                          ),
+                        ),
+                        if (widget.attempts.isNotEmpty)
+                          TextButton(
+                            onPressed: () => setState(
+                                () => _showAttempts = !_showAttempts),
+                            style: TextButton.styleFrom(
+                              minimumSize: const Size(0, 24),
+                              padding: const EdgeInsets.symmetric(horizontal: 6),
+                              textStyle: const TextStyle(fontSize: 10.5),
+                            ),
+                            child: Text(_showAttempts ? '收起' : '查看尝试'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      widget.warning,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        height: 1.4,
+                        color: AppColors.inkSoft,
+                      ),
+                    ),
+                    if (_showAttempts)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: widget.attempts
+                              .map((Map<String, dynamic> a) => Text(
+                                    '· ${_attemptText(a)}',
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      color: AppColors.inkSoft,
+                                    ),
+                                  ))
+                              .toList(),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             TextField(
               onChanged: (String v) => setState(() => _query = v),
               decoration: const InputDecoration(
@@ -444,12 +754,23 @@ class _ModelSheetState extends State<_ModelSheet> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: <Widget>[
                         Text(
-                          m.contextLabel,
+                          m.contextWindow > 0 ? m.contextLabel : '上下文未知',
                           style: const TextStyle(
                             fontSize: 10,
                             color: AppColors.inkSoft,
                           ),
                         ),
+                        if (m.contextSourceLabel.isNotEmpty ||
+                            widget.source == 'remote')
+                          Text(
+                            m.contextSourceLabel.isNotEmpty
+                                ? m.contextSourceLabel
+                                : '远程',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              color: AppColors.inkSoft,
+                            ),
+                          ),
                         if (selected)
                           const Icon(
                             Icons.check_circle,
@@ -458,10 +779,42 @@ class _ModelSheetState extends State<_ModelSheet> {
                           ),
                       ],
                     ),
-                    onTap: () => Navigator.of(context).pop(m),
+                    onTap: () => Navigator.of(context).pop(m.id),
                   );
                 },
               ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).pop('__retry__'),
+                    icon: const Icon(Icons.refresh, size: 15),
+                    label: const Text(
+                      '重试远端获取',
+                      style: TextStyle(fontSize: 11.5),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 38),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).pop('__manual__'),
+                    icon: const Icon(Icons.edit_outlined, size: 15),
+                    label: const Text(
+                      '手动输入模型名',
+                      style: TextStyle(fontSize: 11.5),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 38),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),

@@ -137,6 +137,7 @@ class CharacterSettings {
     this.modelRouting = const <String, String>{},
     this.searchProvider = 'deepseek',
     this.diaryHintEnabled = true,
+    this.qzoneEnabled = false,
   });
 
   final List<RssFeed> rss;
@@ -149,6 +150,9 @@ class CharacterSettings {
   final Map<String, String> modelRouting;
   final String searchProvider;
   final bool diaryHintEnabled;
+
+  /// 是否允许角色主动发 QQ 空间动态（v1.0.1）。
+  final bool qzoneEnabled;
 
   static const CharacterSettings defaults = CharacterSettings();
 
@@ -164,6 +168,7 @@ class CharacterSettings {
         modelRouting: asStringMap(j['modelRouting']),
         searchProvider: asString(j['searchProvider'], 'deepseek'),
         diaryHintEnabled: asBool(j['diaryHintEnabled'], true),
+        qzoneEnabled: asBool(j['qzoneEnabled']),
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -177,6 +182,7 @@ class CharacterSettings {
         'modelRouting': modelRouting,
         'searchProvider': searchProvider,
         'diaryHintEnabled': diaryHintEnabled,
+        'qzoneEnabled': qzoneEnabled,
       };
 
   CharacterSettings copyWith({
@@ -190,6 +196,7 @@ class CharacterSettings {
     Map<String, String>? modelRouting,
     String? searchProvider,
     bool? diaryHintEnabled,
+    bool? qzoneEnabled,
   }) =>
       CharacterSettings(
         rss: rss ?? this.rss,
@@ -202,6 +209,7 @@ class CharacterSettings {
         modelRouting: modelRouting ?? this.modelRouting,
         searchProvider: searchProvider ?? this.searchProvider,
         diaryHintEnabled: diaryHintEnabled ?? this.diaryHintEnabled,
+        qzoneEnabled: qzoneEnabled ?? this.qzoneEnabled,
       );
 }
 

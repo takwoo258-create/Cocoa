@@ -26,6 +26,7 @@ const status = await import('../src/ai/status.js');
 const active = await import('../src/ai/active.js');
 const chat = await import('../src/ai/chat.js');
 const scheduler = await import('../src/ai/scheduler.js');
+const { resolveModel } = await import('../src/ai/provider.js');
 const { chatRoutes } = await import('../src/routes/chat.js');
 
 // ---------------- 测试基座 ----------------
@@ -344,6 +345,9 @@ test('sentence: cleanVerdict 容错，no 判定为未完成，失败按 yes', as
   assert.equal(failed.complete, true);
   assert.equal(failed.failed, true);
   assert.ok(character.id);
+  // 30s 单次等待 + 60s 连续输入总上限
+  assert.equal(sentence.sentenceWaitDueMs({ now: 1_000, firstAt: 1_000 }), 31_000);
+  assert.equal(sentence.sentenceWaitDueMs({ now: 50_000, firstAt: 1_000 }), 61_000); // firstAt + 60s 先到
 });
 
 test('status: 作息判定（跨零点睡眠、午睡、关闭）与固定文案', () => {
@@ -583,6 +587,50 @@ test('chat: 句子未完整时等 30 秒（新消息可取消），到点再生�
   await waitFor(() => all("SELECT id FROM messages WHERE character_id = ? AND role = 'agent'", character.id).length > before);
 });
 
+test('sentence: 连续 3 条 incomplete 受 60s 总上限约束，达到上限直接生成', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider();
+  fake.state.sentence = 'no';
+  chat.setChatProvider(fake.provider);
+  savePrefs(userId, { limits: { enabled: true, hardTokens: 0, softTokens: 0 }, contextLimits: {} });
+
+  const first = await chat.submitUserMessage({ userId, characterId: character.id, content: '我想说' });
+  assert.equal(first.reason, 'sentence_wait');
+  const jobs1 = pendingJobs(character.id, 'sentence_wait');
+  assert.equal(jobs1.length, 1);
+  const firstAt = Number(jobPayload(jobs1[0]).firstAt);
+  assert.ok(firstAt > 0, '等待任务应带 firstAt');
+  assert.ok(Date.parse(jobs1[0].due_at) - firstAt <= 30_500, '首条等待约 30s');
+
+  const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '我想说的是' });
+  assert.equal(second.reason, 'sentence_wait');
+  const jobs2 = pendingJobs(character.id, 'sentence_wait');
+  assert.equal(jobs2.length, 1, '新消息应取消旧计时并重排');
+  assert.equal(Number(jobPayload(jobs2[0]).firstAt), firstAt, '连续输入沿用第一条的起点');
+  assert.ok(Date.parse(jobs2[0].due_at) <= firstAt + 60_500, '总等待不超过 60s');
+
+  const third = await chat.submitUserMessage({ userId, characterId: character.id, content: '我想说的是那个' });
+  assert.equal(third.reason, 'sentence_wait');
+  const jobs3 = pendingJobs(character.id, 'sentence_wait');
+  assert.equal(jobs3.length, 1);
+  assert.ok(Date.parse(jobs3[0].due_at) <= firstAt + 60_500);
+
+  // 模拟这一段已经等满 60s：pending 任务 firstAt 提前到 61s 前
+  run("UPDATE jobs SET status = 'cancelled' WHERE character_id = ? AND type = 'sentence_wait' AND status = 'pending'", character.id);
+  enqueue(
+    'sentence_wait',
+    new Date(Date.now() + 20_000).toISOString(),
+    { messageId: 'm_dummy', firstAt: Date.now() - 61_000 },
+    { userId, characterId: character.id },
+  );
+  const capped = await chat.submitUserMessage({ userId, characterId: character.id, content: '还没说完' });
+  assert.equal(capped.reason, 'generating', '达到上限应直接生成');
+  assert.equal(capped.capped, true);
+  const out = await capped.waitForReply;
+  assert.equal(out.sent, true);
+  savePrefs(userId, { contextLimits: {} });
+});
+
 test('chat: 思考模式默认关、触发词与 prefs.thinking 开启', async () => {
   const character = freshCharacter();
   const fake = fakeProvider();
@@ -608,6 +656,59 @@ test('chat: 思考模式默认关、触发词与 prefs.thinking 开启', async (
 
   assert.equal(chat.shouldThink('好好想想'), true);
   assert.equal(chat.shouldThink('吃了吗'), false);
+});
+
+// ---------------- 空回复兜底（v1.0.1） ----------------
+
+test('chat: 空回复重试后仍为空 → 兜底消息落库（meta.reason=fallback）', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  let mainCalls = 0;
+  const fake = fakeProvider({
+    main: async () => {
+      mainCalls += 1;
+      return { text: '', usage: { input: 5, output: 0 }, model: 'fake-empty', finishReason: 'length' };
+    },
+  });
+  chat.setChatProvider(fake.provider);
+
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '今天有点累' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true, '兜底消息必须落库并发送，不能静默丢弃');
+  assert.equal(out.fallback, true);
+  assert.equal(mainCalls, 2, '空回复应只重试一次');
+
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.meta.reason, 'fallback');
+  assert.ok(agent.plain.includes('走神'), '应写入温和兜底文案');
+});
+
+test('chat: 空回复一次后严格重试成功，不触发兜底', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  let mainCalls = 0;
+  const fake = fakeProvider({
+    main: async () => {
+      mainCalls += 1;
+      if (mainCalls === 1) {
+        return { text: '   ', usage: { input: 5, output: 0 }, model: 'fake-empty', finishReason: 'length', reasoning: '想了很久' };
+      }
+      return {
+        text: JSON.stringify({ type: 'message', content: '重试成功', agent: [{ content: '重试成功', wait: 0 }] }),
+        usage: { input: 6, output: 3 },
+        model: 'fake-retry',
+      };
+    },
+  });
+  chat.setChatProvider(fake.provider);
+
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '在吗' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true);
+  assert.equal(out.retried, true);
+  assert.equal(out.fallback, false);
+  assert.equal(mainCalls, 2);
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.plain, '重试成功');
+  assert.equal(agent.meta.reason, 'user_message');
 });
 
 // ---------------- 网页搜索（build.md 2.12） ----------------
@@ -850,6 +951,55 @@ test('scheduler: 未知任务类型不崩溃，动态记忆线模块缺失时跳
   assert.equal(scheduler.schedulerState().running, false);
 });
 
+test('limits: prefs.limits.enabled=false 时不拦截硬/软限额', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+  savePrefs(userId, { limits: { enabled: false, hardTokens: 1, softTokens: 1 } });
+  recordUsage({ userId, characterId: character.id, kind: 'main', model: 'fake', usage: { input: 100, output: 0 }, cost: 0 });
+
+  const limits = context.limitState(userId);
+  assert.equal(limits.enabled, false);
+  assert.equal(limits.hardLimited, false);
+  assert.equal(limits.softLimited, false);
+
+  const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '限额开关关闭时仍应回复' });
+  assert.equal(out.accepted, true);
+  const res = await out.waitForReply;
+  assert.equal(res.sent, true);
+  savePrefs(userId, { limits: { enabled: true, hardTokens: 0, softTokens: 0 } });
+});
+
+test('context: contextLimits 以主模型为优先，并同步 conversations.context_limit 与占用', async () => {
+  const character = freshCharacter();
+  const model = resolveModel(userId, 'main');
+  savePrefs(userId, { contextLimits: { [model]: 4_321, default: 1_000, [character.id]: 999 } });
+  assert.equal(context.contextLimitFor(userId, character.id), 4_321, '主模型覆盖优先于 default/角色');
+
+  const conv = context.ensureMainConversation(userId, character.id);
+  assert.equal(Number(conv.context_limit), 4_321);
+
+  run(
+    'INSERT INTO messages(id, conversation_id, character_id, user_id, role, kind, content, meta, tokens_in, tokens_out, created_at) VALUES(?,?,?,?,?,?,?,?,0,0,?)',
+    'm_ctx_override',
+    conv.id,
+    character.id,
+    userId,
+    'user',
+    'text',
+    encryptText(userId, '一段用于占用统计的文本'),
+    null,
+    nowIso(),
+  );
+
+  savePrefs(userId, { contextLimits: { [model]: 7_777 } });
+  const updated = context.ensureMainConversation(userId, character.id);
+  assert.equal(Number(updated.context_limit), 7_777);
+  const row = get('SELECT token_used FROM conversations WHERE id = ?', conv.id);
+  assert.ok(row.token_used > 0, '上限变化后应刷新上下文占用');
+  savePrefs(userId, { contextLimits: {} });
+});
+
 // ---------------- 周期任务补排（记忆线接线） ----------------
 
 test('scheduler: 周期任务补排 portrait/news_read/creation，且同类型 pending 去重', async () => {
@@ -924,6 +1074,46 @@ test('scheduler: 周期任务补排 portrait/news_read/creation，且同类型 p
 
   // 不执行这些任务（会访问外网/模型），直接取消
   run("UPDATE jobs SET status = 'cancelled' WHERE character_id = ? AND status = 'pending'", character.id);
+});
+
+test('scheduler: 看门狗补回 45s 前的用户消息，并按 messageId 去重', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+  savePrefs(userId, { limits: { enabled: true, hardTokens: 0, softTokens: 0 }, contextLimits: {} });
+  scheduler.resetWatchdogSeen();
+
+  const conv = context.ensureMainConversation(userId, character.id);
+  const staleAt = new Date(Date.now() - 60_000).toISOString();
+  run(
+    'INSERT INTO messages(id, conversation_id, character_id, user_id, role, kind, content, meta, tokens_in, tokens_out, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+    'm_watchdog_1',
+    conv.id,
+    character.id,
+    userId,
+    'user',
+    'text',
+    encryptText(userId, '看门狗测试消息'),
+    null,
+    5,
+    0,
+    staleAt,
+  );
+
+  const first = await scheduler.runWatchdog();
+  assert.ok(first.triggered >= 1, '超过 45s 未回复应触发补回复');
+  const agent = get(
+    "SELECT * FROM messages WHERE character_id = ? AND role = 'agent' ORDER BY created_at DESC LIMIT 1",
+    character.id,
+  );
+  assert.ok(agent, '看门狗应补出一条 agent 消息');
+  assert.equal(decryptJson(userId, agent.meta, {}).reason, 'watchdog');
+  assert.equal(decryptText(userId, agent.content), '我在呢');
+
+  const second = await scheduler.runWatchdog();
+  assert.equal(second.triggered, 0, '同一 messageId 不重复补回复');
+  const count = get("SELECT COUNT(*) AS c FROM messages WHERE character_id = ? AND role = 'agent'", character.id).c;
+  assert.equal(count, 1);
 });
 
 // ---------------- HTTP 路由（双前缀） ----------------

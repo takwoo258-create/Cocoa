@@ -77,6 +77,13 @@ ThemeData buildAppTheme() {
       contentTextStyle: TextStyle(color: AppColors.white),
       behavior: SnackBarBehavior.floating,
     ),
+    pageTransitionsTheme: const PageTransitionsTheme(
+      builders: <TargetPlatform, PageTransitionsBuilder>{
+        TargetPlatform.android: CocoaPageTransitionsBuilder(),
+        TargetPlatform.iOS: CocoaPageTransitionsBuilder(),
+        TargetPlatform.macOS: CocoaPageTransitionsBuilder(),
+      },
+    ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: AppColors.white,
@@ -152,4 +159,34 @@ ThemeData buildAppTheme() {
       linearTrackColor: AppColors.sand,
     ),
   );
+}
+
+/// v1.0.1：页面切换动效（淡入 + 轻微右滑）。
+class CocoaPageTransitionsBuilder extends PageTransitionsBuilder {
+  const CocoaPageTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    final Animation<double> curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return FadeTransition(
+      opacity: curved,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0.05, 0),
+          end: Offset.zero,
+        ).animate(curved),
+        child: child,
+      ),
+    );
+  }
 }

@@ -81,6 +81,18 @@ export function sendPrivate(qq, text) {
   return sendAction('send_private_msg', { user_id: numeric, message: String(text) });
 }
 
+/** 发送 QQ 空间说说（NapCat send_qzone_msg 扩展动作） */
+export async function sendQzonePost({ content = '', images = [], ugcRight = 1 } = {}) {
+  const text = String(content || '').trim();
+  if (!text) return { ok: false, reason: 'content_required' };
+  const params = { content: text, ugc_right: Number(ugcRight) || 1 };
+  if (Array.isArray(images) && images.length) params.images = images.slice(0, 9).map(String);
+  const result = await sendAction('send_qzone_msg', params, 20_000);
+  if (!result.ok) return { ok: false, reason: result.reason, data: result.data };
+  const data = result.data?.data || result.data || {};
+  return { ok: true, tid: data.tid || null, time: data.time || 0, raw: result.data };
+}
+
 export function onebotStatus() {
   const cfg = currentConfig();
   return {

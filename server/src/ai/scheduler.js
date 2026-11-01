@@ -6,12 +6,13 @@
 import logger from '../core/logger.js';
 import { all, get } from '../db/index.js';
 import { dayKey } from '../core/util.js';
+import { decryptText } from '../core/crypto.js';
 import { enqueue, dueJobs, jobPayload, markJob } from '../services/jobs.js';
-import { getSettings } from '../services/characters.js';
-import { limitState } from './context.js';
-import { refreshStatus, bootstrapStatusJobs } from './status.js';
+import { getSettings, getCharacter, ensureState } from '../services/characters.js';
+import { limitState, isCompressing } from './context.js';
+import { refreshStatus, bootstrapStatusJobs, effectiveSleep } from './status.js';
 import { handleActiveReplyJob } from './active.js';
-import { getChatProvider, handleSegmentSend, handleSentenceWait, handleWakeJudge, runCompression } from './chat.js';
+import { getChatProvider, handleSegmentSend, handleSentenceWait, handleWakeJudge, runCompression, runGeneration, isGenerating } from './chat.js';
 
 export const POLL_INTERVAL_MS = 30_000;
 export const PORTRAIT_INTERVAL_MS = 24 * 3600_000;
@@ -317,6 +318,87 @@ export async function dispatchJob(job) {
   }
 }
 
+// ---------------- 回复看门狗（v1.0.1） ----------------
+
+export const WATCHDOG_MIN_AGE_MS = 45_000;
+export const WATCHDOG_MAX_PER_TICK = 5;
+const watchdogSeen = new Set();
+
+export function resetWatchdogSeen() {
+  watchdogSeen.clear();
+}
+
+/**
+ * 扫描主会话：最新用户消息超过 45s 且之后没有 agent 消息、没有等待中的任务、
+ * 不在睡眠/硬限额、也没有正在生成时，补一次生成（按 messageId 去重）。
+ * 进程重启后也能把「用户发了但没人回」的消息补上。
+ */
+export async function runWatchdog({ now = Date.now(), max = WATCHDOG_MAX_PER_TICK, limit = 200 } = {}) {
+  const out = { scanned: 0, triggered: 0, skipped: 0, results: [] };
+  const conversations = all(
+    "SELECT * FROM conversations WHERE kind = 'main' AND active = 1 ORDER BY updated_at DESC LIMIT ?",
+    Math.max(1, Number(limit) || 200),
+  );
+  for (const conv of conversations) {
+    if (out.triggered >= max) break;
+    out.scanned += 1;
+    const lastUser = get(
+      "SELECT * FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+      conv.id,
+    );
+    if (!lastUser) continue;
+    const age = now - Date.parse(lastUser.created_at);
+    if (!Number.isFinite(age) || age < WATCHDOG_MIN_AGE_MS) continue;
+    if (watchdogSeen.has(lastUser.id)) {
+      out.skipped += 1;
+      continue;
+    }
+    const agentAfter = get(
+      "SELECT id FROM messages WHERE conversation_id = ? AND role = 'agent' AND created_at >= ? LIMIT 1",
+      conv.id,
+      lastUser.created_at,
+    );
+    if (agentAfter) continue;
+    const pending = get(
+      "SELECT id FROM jobs WHERE character_id = ? AND status = 'pending' AND type IN ('sentence_wait','active_reply','context_compress') LIMIT 1",
+      conv.character_id,
+    );
+    if (pending) {
+      out.skipped += 1;
+      continue;
+    }
+    if (isCompressing(conv.id) || isGenerating(conv.user_id, conv.character_id)) {
+      out.skipped += 1;
+      continue;
+    }
+    const limits = limitState(conv.user_id);
+    if (limits.hardLimited) continue;
+    const character = getCharacter(conv.user_id, conv.character_id);
+    if (!character) continue;
+    const state = ensureState(conv.character_id, conv.user_id);
+    if (effectiveSleep(character, state, new Date(now)).mode !== 'awake') continue;
+
+    watchdogSeen.add(lastUser.id);
+    if (watchdogSeen.size > 1000) watchdogSeen.clear();
+    out.triggered += 1;
+    try {
+      const result = await runGeneration({
+        userId: conv.user_id,
+        characterId: conv.character_id,
+        conversationId: conv.id,
+        reason: 'watchdog',
+        triggerText: decryptText(conv.user_id, lastUser.content),
+        voiceReply: lastUser.kind === 'voice',
+      });
+      out.results.push({ messageId: lastUser.id, ok: result?.ok === true, reason: result?.reason || null });
+    } catch (err) {
+      logger.warn('看门狗补回复失败', conv.id, err?.message || err);
+      out.results.push({ messageId: lastUser.id, ok: false, reason: 'exception' });
+    }
+  }
+  return out;
+}
+
 /**
  * 跑一轮到期任务。可被调度器或测试直接调用。
  */
@@ -347,6 +429,12 @@ export async function tick({ limit = 20, sweep = true } = {}) {
         } catch (err) {
           logger.warn('状态任务补排失败', err?.message || err);
         }
+      }
+      try {
+        const watchdog = await runWatchdog({ now: Date.now() });
+        if (watchdog.triggered) logger.info('看门狗补回复', watchdog);
+      } catch (err) {
+        logger.warn('回复看门狗异常', err?.message || err);
       }
     }
     return { ok: true, processed: results.length, results };
@@ -381,4 +469,4 @@ export function schedulerState() {
   return { running: Boolean(timer), ticking, tickCount, pollMs: POLL_INTERVAL_MS };
 }
 
-export default { startScheduler, stopScheduler, tick, dispatchJob, registerHandler, schedulerState, bootstrapPeriodicJobs, nextDailyUtc8, nextHourUtc8, todayUtc8At };
+export default { startScheduler, stopScheduler, tick, dispatchJob, registerHandler, schedulerState, bootstrapPeriodicJobs, runWatchdog, resetWatchdogSeen, nextDailyUtc8, nextHourUtc8, todayUtc8At };

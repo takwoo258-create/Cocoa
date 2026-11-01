@@ -227,3 +227,52 @@ handleOnebotIncoming({qq, text}) -> {ok, reason?, reply?}
 // realtime/hub.js
 broadcast(userId, event)
 ```
+
+## 12. v1.0.1 增量接口
+
+### 12.1 版本检查 `GET /api/version/latest?current=1.0.1`（公开，无需鉴权）
+返回：
+```json
+{
+  "ok": true, "current": "1.0.1", "source": "github|cache|unavailable",
+  "latest": {
+    "version": "1.0.2", "tag": "v1.0.2", "name": "Cocoa v1.0.2",
+    "notes": "更新日志文本", "publishedAt": "2026-11-01T00:00:00Z",
+    "url": "https://github.com/takwoo258-create/Cocoa/releases/tag/v1.0.2",
+    "apk": {"name": "Cocoa-v1.0.2.apk", "size": 22020579,
+            "directUrl": "https://github.com/.../Cocoa-v1.0.2.apk",
+            "url": "https://gh-proxy.com/https://github.com/.../Cocoa-v1.0.2.apk"}
+  },
+  "updateAvailable": true, "proxy": "https://gh-proxy.com/", "checkedAt": "…"
+}
+```
+缓存 10 分钟；GitHub 不可用时回退最近一次成功结果（`source:"cache"`）。
+
+### 12.2 QQ 空间动态 `POST /api/onebot/qzone`（需登录）
+```json
+{"content":"今天的花开了。","images":[],"ugcRight":1}
+```
+→ `{ok:true, tid:"…", time:0, ugcRight:1}`；未连接 503、动作失败 502。
+底层为 NapCat 扩展动作 `send_qzone_msg`（content/images/ugc_right）。
+
+### 12.3 模型列表与上下文
+`POST /api/config/models` 每个模型新增 `contextWindowSource: "remote" | "table" | "default"`；
+响应新增 `attempts:[{url,status|error}]` 与 `warning`（远端失败时）。baseURL 会自动尝试 `<base>/v1/models` 与 `<base>/models`。
+`GET /api/config/model-info?id=<model>` 返回 `contextWindow/contextWindowSource/override`。
+
+### 12.4 偏好设置新增
+```json
+{"limits":{"enabled":true,"hardTokens":0,"softTokens":0},
+ "contextLimits":{"gpt-4o-mini":128000,"default":65536}}
+```
+`limits.enabled=false` 时不执行硬/软限额；`contextLimits` 优先于模型内置窗口。
+
+### 12.5 配置项收敛
+`search/fetch` 复用 DeepSeek 配置，不再出现在 `/api/config` 的 `api` 服务项中（`ready.search` 字段保留兼容）。
+
+### 12.6 WebSocket typing 事件
+```json
+{"type":"typing","characterId":"c_x","typing":true,"stage":"checking|waiting|replying"}
+{"type":"typing","characterId":"c_x","typing":false}
+```
+`checking`=句子完整性判断，`waiting`=30s 等待用户补全，`replying`=模型生成中。

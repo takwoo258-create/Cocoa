@@ -42,13 +42,19 @@ export function estimateMessagesTokens(messages = []) {
   return total;
 }
 
-/** 上下文上限：prefs.contextLimits[characterId] > prefs.contextLimits.default > 模型窗口 */
-export function contextLimitFor(userId, characterId) {
+/**
+ * 上下文上限优先级（v1.0.1）：
+ *   prefs.contextLimits[主模型] > prefs.contextLimits[characterId] > prefs.contextLimits.default > 模型内置窗口
+ */
+export function contextLimitFor(userId, characterId = null) {
   const prefs = getPrefs(userId);
-  const limits = prefs.contextLimits || {};
-  const candidate = Number(limits[characterId] ?? limits.default ?? 0);
-  if (Number.isFinite(candidate) && candidate > 0) return Math.round(candidate);
   const model = resolveModel(userId, 'main');
+  const limits = prefs.contextLimits || {};
+  const candidates = [limits[model], characterId ? limits[characterId] : undefined, limits.default];
+  for (const raw of candidates) {
+    const candidate = Number(raw);
+    if (Number.isFinite(candidate) && candidate > 0) return Math.round(candidate);
+  }
   return contextWindowFor(model) || 32_768;
 }
 
@@ -68,6 +74,12 @@ export function ensureMainConversation(userId, characterId) {
     if (Number(conv.context_limit) !== limit) {
       run('UPDATE conversations SET context_limit = ? WHERE id = ?', limit, conv.id);
       conv = { ...conv, context_limit: limit };
+      // 上限变化后按新口径重算占用（摘要 + 未压缩消息）
+      try {
+        refreshConversationUsage(conv.id);
+      } catch {
+        /* 占用刷新失败不影响主链路 */
+      }
     }
     return conv;
   }
@@ -211,14 +223,16 @@ export function limitState(userId) {
   const prefs = getPrefs(userId);
   const totals = usageTotals(userId);
   const total = Number(totals.input || 0) + Number(totals.output || 0);
+  const enabled = prefs.limits?.enabled !== false;
   const hard = Number(prefs.limits?.hardTokens || 0);
   const soft = Number(prefs.limits?.softTokens || 0);
   return {
     total,
     hard,
     soft,
-    hardLimited: hard > 0 && total >= hard,
-    softLimited: soft > 0 && total >= soft,
+    enabled,
+    hardLimited: enabled && hard > 0 && total >= hard,
+    softLimited: enabled && soft > 0 && total >= soft,
     prefs,
   };
 }

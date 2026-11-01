@@ -126,7 +126,7 @@ class _LoginPageState extends State<LoginPage> {
       code = _regCode.text.trim();
       if (username.length < 2) { showToast('用户名至少 2 个字符'); return; }
       if (!email.contains('@')) { showToast('请填写正确的邮箱'); return; }
-      if (!RegExp(r'^\d{5,12}$').hasMatch(qq)) { showToast('请填写正确的 QQ 号'); return; }
+      if (!RegExp(r'^\d{5,12}$').hasMatch(qq)) { showToast('注册必须填写 5-12 位 QQ 号'); return; }
       if (password.length < 8) { showToast('密码至少 8 位'); return; }
       if (password != confirm) { showToast('两次输入的密码不一致'); return; }
       if (code.isEmpty) { showToast('请填写邮箱验证码'); return; }
@@ -355,7 +355,7 @@ class _LoginPageState extends State<LoginPage> {
             FilteringTextInputFormatter.digitsOnly,
             LengthLimitingTextInputFormatter(12),
           ],
-          decoration: _dec('QQ 号', hint: '用于 QQ 机器人绑定'),
+          decoration: _dec('QQ 号（必填）', hint: '用于 QQ 机器人绑定，5-12 位数字'),
         ),
         const SizedBox(height: 10),
         TextField(

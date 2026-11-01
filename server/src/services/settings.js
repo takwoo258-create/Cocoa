@@ -20,8 +20,8 @@ const DEFAULT_PREFS = {
     main: '', sentence: '', profile: '', portrait: '', creation: '', status: '',
     memory: '', vision: '', news: '', search: '', tts: '', stt: '',
   },
-  limits: { hardTokens: 0, softTokens: 0 },
-  contextLimits: {},
+  limits: { enabled: true, hardTokens: 0, softTokens: 0 },
+  contextLimits: {}, // { "gpt-4o-mini": 128000, "default": 65536 }
   segmentEnabled: true,
   language: 'zh-CN',
 };

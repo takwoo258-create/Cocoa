@@ -114,6 +114,10 @@ class ApiClient {
       code = (err['code'] ?? code).toString();
       message = (err['message'] ?? message).toString();
       detail = err['detail'];
+    } else if (body is Map && body['message'] is String) {
+      // v1.0.1：onebot/qzone 等接口用顶层 { ok, reason, message } 返回错误
+      message = body['message'] as String;
+      if (body['reason'] is String) code = body['reason'] as String;
     } else if (body is String && body.isNotEmpty) {
       message = body;
     }

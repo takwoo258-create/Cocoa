@@ -2,7 +2,7 @@
 import express, { Router } from 'express';
 import { requireAuth, requireAdmin } from '../auth/middleware.js';
 import { asyncHandler, badRequest } from '../core/errors.js';
-import { sendPrivate, onebotStatus } from '../onebot/server.js';
+import { sendPrivate, onebotStatus, sendQzonePost } from '../onebot/server.js';
 import { handleIncomingEvent, recordMessage } from '../onebot/handler.js';
 import { getOnebotConfig } from '../services/settings.js';
 import { truncate } from '../core/util.js';
@@ -86,6 +86,33 @@ export default function register() {
       }
       recordMessage({ qq, direction: 'out', content: truncate(text, 2000) });
       res.json({ ok: true, qq, delivered: true, echo: sent.echo || null });
+    }),
+  );
+
+  // 角色发送 QQ 空间动态（需 NapCat 支持 send_qzone_msg 扩展动作）
+  r.post(
+    '/qzone',
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const content = String(req.body?.content ?? '').trim();
+      if (!content) throw badRequest('动态内容不能为空', 'content_required');
+      if (content.length > 1000) throw badRequest('动态内容过长（最多 1000 字）', 'content_too_long');
+      const images = Array.isArray(req.body?.images) ? req.body.images.slice(0, 9).map(String) : [];
+      const ugcRight = Number(req.body?.ugcRight ?? req.body?.ugc_right ?? 1) || 1;
+      const sent = await sendQzonePost({ content, images, ugcRight });
+      if (!sent.ok) {
+        const status = sent.reason === 'not_connected' ? 503 : 502;
+        return res.status(status).json({
+          ok: false,
+          reason: sent.reason || 'send_failed',
+          message:
+            sent.reason === 'not_connected'
+              ? 'OneBot 尚未连接，请确认 NapCat 已上报并支持 send_qzone_msg'
+              : `QQ 动态发送失败：${sent.reason || '未知原因'}`,
+        });
+      }
+      recordMessage({ direction: 'out', content: truncate('[QQ动态] ' + content, 2000) });
+      res.json({ ok: true, tid: sent.tid, time: sent.time, ugcRight });
     }),
   );
 

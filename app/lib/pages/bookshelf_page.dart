@@ -5,11 +5,13 @@ import '../core/api_client.dart';
 import '../core/constants.dart';
 import '../core/app_state.dart';
 import '../core/global.dart';
+import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
 import '../models/book.dart';
 import '../models/character.dart';
 import '../widgets/common.dart';
+import '../widgets/qzone_share_sheet.dart';
 import 'reader_page.dart';
 
 class BookshelfPage extends StatefulWidget {
@@ -350,6 +352,24 @@ class _BookshelfPageState extends State<BookshelfPage>
                           fontSize: 10,
                           color: AppColors.inkSoft,
                         ),
+                      ),
+                      const SizedBox(width: 2),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '分享到 QQ 动态',
+                        icon: const Icon(Icons.share_outlined, size: 16),
+                        onPressed: () {
+                          final String image = asString(
+                            b.meta['image'] ??
+                                b.meta['cover'] ??
+                                b.meta['imageUrl'],
+                          );
+                          showQzoneShare(
+                            context,
+                            defaultContent: '${b.title}\n\n${b.previewText}',
+                            imageUrl: image.isEmpty ? null : image,
+                          );
+                        },
                       ),
                     ],
                   ),

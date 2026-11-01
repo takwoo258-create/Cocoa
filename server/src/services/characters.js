@@ -17,6 +17,7 @@ export const DEFAULT_CHARACTER_SETTINGS = {
   sleep: { enabled: true, start: '23:30', end: '07:00', napStart: '13:00', napEnd: '14:30' },
   statusIntervalMin: 10,
   activeReply: true,
+  qzoneEnabled: false,
   timezone: 'Asia/Shanghai',
   modelRouting: {},
   searchProvider: 'deepseek',

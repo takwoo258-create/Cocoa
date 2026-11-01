@@ -1,3 +1,4 @@
+import '../core/constants.dart';
 import '../core/json_utils.dart';
 
 /// 单个模型服务的配置。apiKey 只回显 apiKeySet / apiKeyMasked。
@@ -94,6 +95,17 @@ class AppConfig {
   Map<String, String> get modelRouting => asStringMap(preferences['modelRouting']);
   int get hardTokens => asInt(asMap(preferences['limits'])['hardTokens']);
   int get softTokens => asInt(asMap(preferences['limits'])['softTokens']);
+  bool get limitsEnabled => asBool(asMap(preferences['limits'])['enabled'], true);
+
+  /// 手动上下文长度覆盖（模型键或 default）。
+  Map<String, dynamic> get contextLimits => asMap(preferences['contextLimits']);
+
+  int? contextLimitFor(String model) {
+    final Map<String, dynamic> limits = contextLimits;
+    if (limits[model] != null) return asInt(limits[model]);
+    if (limits['default'] != null) return asInt(limits['default']);
+    return null;
+  }
 
   factory AppConfig.fromJson(Map<String, dynamic> j) {
     final Map<String, dynamic> api = asMap(j['api']);
@@ -124,6 +136,8 @@ class ModelInfo {
     this.modalities = const <String>[],
     this.capabilities = const <String, dynamic>{},
     this.contextWindow = 0,
+    this.contextWindowSource = '',
+    this.contextOverride,
     this.svg = const <String, String>{},
   });
 
@@ -131,6 +145,12 @@ class ModelInfo {
   final List<String> modalities;
   final Map<String, dynamic> capabilities;
   final int contextWindow;
+
+  /// remote / table / default（v1.0.1）。
+  final String contextWindowSource;
+
+  /// GET /api/config/model-info 返回的手动覆盖值。
+  final int? contextOverride;
   final Map<String, String> svg;
 
   factory ModelInfo.fromJson(Map<String, dynamic> j) => ModelInfo(
@@ -138,8 +158,14 @@ class ModelInfo {
         modalities: asStringList(j['modalities']),
         capabilities: asMap(j['capabilities']),
         contextWindow: asInt(j['contextWindow']),
+        contextWindowSource: asString(j['contextWindowSource']),
+        contextOverride: j['override'] == null ? null : asInt(j['override']),
         svg: asStringMap(j['svg']),
       );
+
+  String get contextSourceLabel => contextWindowSource.isEmpty
+      ? ''
+      : (kContextSourceLabels[contextWindowSource] ?? contextWindowSource);
 
   bool get supportsText {
     if (capabilities.containsKey('text')) {
@@ -187,10 +213,19 @@ class ModelInfo {
 }
 
 class ModelListResult {
-  const ModelListResult({this.models = const <ModelInfo>[], this.source = ''});
+  const ModelListResult({
+    this.models = const <ModelInfo>[],
+    this.source = '',
+    this.warning = '',
+    this.attempts = const <Map<String, dynamic>>[],
+  });
 
   final List<ModelInfo> models;
   final String source;
+  final String warning;
+  final List<Map<String, dynamic>> attempts;
+
+  bool get isFallback => warning.isNotEmpty || source == 'fallback';
 
   factory ModelListResult.fromJson(Map<String, dynamic> j) => ModelListResult(
         models: asMapList(j['models'])
@@ -198,6 +233,8 @@ class ModelListResult {
             .where((ModelInfo m) => m.id.isNotEmpty)
             .toList(),
         source: asString(j['source']),
+        warning: asString(j['warning']),
+        attempts: asMapList(j['attempts']),
       );
 }
 

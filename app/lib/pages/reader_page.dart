@@ -1,13 +1,27 @@
 import 'package:flutter/material.dart';
 
+import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
 import '../models/book.dart';
+import '../widgets/qzone_share_sheet.dart';
 
 class ReaderPage extends StatelessWidget {
   const ReaderPage({super.key, required this.book});
 
   final Book book;
+
+  String get _shareImageUrl {
+    final String image = asString(
+      book.meta['image'] ?? book.meta['cover'] ?? book.meta['imageUrl'],
+    );
+    return image;
+  }
+
+  String get _shareContent {
+    final String body = book.content.isNotEmpty ? book.content : book.previewText;
+    return '${book.title}\n\n${body.length > 600 ? body.substring(0, 600) : body}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -18,6 +32,17 @@ class ReaderPage extends StatelessWidget {
           kTypeLabel(book.type),
           style: const TextStyle(fontSize: 15),
         ),
+        actions: <Widget>[
+          IconButton(
+            tooltip: '分享到 QQ 动态',
+            icon: const Icon(Icons.share_outlined, size: 20),
+            onPressed: () => showQzoneShare(
+              context,
+              defaultContent: _shareContent,
+              imageUrl: _shareImageUrl.isEmpty ? null : _shareImageUrl,
+            ),
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(22, 18, 22, 40),

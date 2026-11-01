@@ -15,6 +15,7 @@ import statsRouter from './routes/stats.js';
 import adminRouter from './routes/admin.js';
 import mediaRouter from './routes/media.js';
 import onebotRouter from './routes/onebot.js';
+import versionRouter from './routes/version.js';
 
 export function createApp() {
   const app = express();
@@ -42,7 +43,7 @@ export function createApp() {
     res.json({
       ok: true,
       name: 'cocoa',
-      version: '1.0.0',
+      version: '1.0.1',
       time: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
     });
@@ -62,7 +63,9 @@ export function createApp() {
   app.use('/api/stats', statsRouter());
   app.use('/api/admin', adminRouter());
   app.use('/api/media', mediaRouter());
+  app.use('/api/version', versionRouter());
   app.use('/onebot', onebotRouter());
+  app.use('/api/onebot', onebotRouter());
 
   // 可选前端（若存在 web 构建产物）
   const webDist = path.join(env.root, 'web', 'dist');

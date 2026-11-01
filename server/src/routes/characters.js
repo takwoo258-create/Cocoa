@@ -114,6 +114,7 @@ function sanitizeSettings(input = {}) {
     patch.statusIntervalMin = clamp(asInt(input.statusIntervalMin, 10), 1, 240);
   }
   if (input.activeReply !== undefined) patch.activeReply = Boolean(input.activeReply);
+  if (input.qzoneEnabled !== undefined) patch.qzoneEnabled = Boolean(input.qzoneEnabled);
   if (input.timezone !== undefined) {
     const tz = String(input.timezone || '').trim();
     if (!tz || !TIMEZONE_RE.test(tz)) throw badRequest('时区格式不正确', 'timezone_invalid');

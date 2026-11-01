@@ -2,28 +2,33 @@
 library cocoa.core.constants;
 
 const String kAppName = 'Cocoa';
-const String kAppVersion = '1.0.0';
+const String kAppVersion = '1.0.1';
 
 /// 默认服务地址（可在设置页修改）。
 const String kDefaultBaseUrl = 'http://120.26.204.70:8787';
 
-/// 服务配置中的六个服务。
+/// 服务配置中的服务（v1.0.1：search/fetch 复用 DeepSeek，不再单列）。
 const List<String> kServices = <String>[
   'chat',
   'embedding',
   'deepseek',
   'stt',
   'tts',
-  'search',
 ];
 
 const Map<String, String> kServiceLabels = <String, String>{
   'chat': '对话模型',
   'embedding': '嵌入模型',
-  'deepseek': 'DeepSeek 搜索',
+  'deepseek': 'DeepSeek（搜索/抓取复用）',
   'stt': '语音识别 STT',
   'tts': '语音合成 TTS',
-  'search': '网页搜索',
+};
+
+/// 模型上下文窗口来源：remote=远端 / table=内置表 / default=默认。
+const Map<String, String> kContextSourceLabels = <String, String>{
+  'remote': '远程',
+  'table': '内置',
+  'default': '默认',
 };
 
 /// 模型分工任务（/api/config preferences.modelRouting）。
@@ -52,7 +57,7 @@ const Map<String, String> kRoutingLabels = <String, String>{
   'memory': '记忆提取',
   'vision': '图片理解',
   'news': '新闻阅读',
-  'search': '网页搜索',
+  'search': '网页搜索（复用 DeepSeek）',
   'tts': '语音合成',
   'stt': '语音识别',
 };
@@ -120,3 +125,10 @@ const String kNoticeCompressing = '在回味之前的记忆喵~';
 
 /// 角色休息提示中固定的后半句（build.md 二.14）。
 const String kForceWakeSuffix = '若强行叫醒的话，可能会带来不必要的麻烦哦';
+
+/// typing 事件阶段文案（v1.0.1）。
+const Map<String, String> kTypingStageLabels = <String, String>{
+  'checking': '正在看懂你的话…',
+  'waiting': '正在等你把话说完…',
+  'replying': '正在输入…',
+};
