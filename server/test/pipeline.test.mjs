@@ -73,6 +73,7 @@ test('对话→记忆→画像→创作 全链路', { timeout: 150_000 }, async 
     body: {
       name: '可可', age: '20', race: '人类', gender: '女', personality: '温柔', worldview: '都市',
       hobbies: '烘焙', relation: '恋人', appearance: '黑发', occupation: '店长',
+      settings: { sleep: { enabled: false } },
     },
   });
   assert.equal(created.status, 201);

@@ -194,6 +194,7 @@ try {
         personality: '温柔而有点小倔强', worldview: '现代都市的深夜咖啡店',
         hobbies: '烘焙、听黑胶', relation: '住在隔壁的青梅竹马',
         appearance: '栗色长发', occupation: '咖啡店店长',
+        settings: { sleep: { enabled: false } },
       },
     });
     assert(r.status === 201 || r.status === 200, `${r.status} ${JSON.stringify(r.json)}`);
