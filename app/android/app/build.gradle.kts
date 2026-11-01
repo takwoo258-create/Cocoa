@@ -1,8 +1,8 @@
 import java.util.Properties
 
-// 产品要求 minSdk 23；Flutter 3.47 默认 24，且 flutter tool 会把字面量 `minSdk = 23` 重写为
-// `flutter.minSdkVersion`，这里用脚本变量绕开该迁移（Gradle 校验器 error 阈值为 <23，23 仅告警）。
-val cocoaMinSdk = 23
+// Android 7.0+（API 24）：Flutter 3.47 与 image_picker_android / shared_preferences_android /
+// flutter_plugin_android_lifecycle 均要求 minSdk ≥ 24，与 Flutter 默认值一致。
+val cocoaMinSdk = 24
 
 // cocoa-keystore：从 android/key.properties（不入库）读取 release 签名；文件缺失时回落 debug 签名
 val cocoaKeyProps = Properties().apply {

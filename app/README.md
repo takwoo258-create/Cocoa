@@ -52,6 +52,6 @@ flutter analyze
 flutter build apk --debug
 ```
 
-`android/app/build.gradle.kts`：`applicationId=com.sandsalt.cocoa`、`minSdk=23`、`targetSdk=35`，
+`android/app/build.gradle.kts`：`applicationId=com.sandsalt.cocoa`、`minSdk=24`（Android 7.0+）、`targetSdk=35`，
 `compileSdk` 跟随 Flutter（当前 36）；Manifest 已开启 `usesCleartextTraffic` 并声明
 `INTERNET / RECORD_AUDIO / CAMERA` 等权限。签名与 release 构建由 ops 线注入。
