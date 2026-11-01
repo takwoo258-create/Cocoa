@@ -54,7 +54,7 @@ class _ProfilePageState extends State<ProfilePage> {
     final String email = _email.text.trim();
     final String qq = _qq.text.trim();
     if (username.length < 2) {
-      showToast('用户名至少 2 个字符');
+      showToast('昵称至少 2 个字符');
       return;
     }
     if (!email.contains('@')) {
@@ -119,7 +119,7 @@ class _ProfilePageState extends State<ProfilePage> {
           SectionCard(
             title: '账号信息',
             trailing: Text(
-              state.isAdmin ? '超级管理员' : '普通用户',
+              '${state.user?.codeLabel ?? ''} · ${state.isAdmin ? '超级管理员' : '普通用户'}',
               style: TextStyle(
                 fontSize: 10,
                 color: state.isAdmin ? AppColors.rose : AppColors.inkSoft,
@@ -129,7 +129,7 @@ class _ProfilePageState extends State<ProfilePage> {
               children: <Widget>[
                 TextField(
                   controller: _username,
-                  decoration: const InputDecoration(labelText: '用户名'),
+                  decoration: const InputDecoration(labelText: '昵称'),
                 ),
                 const SizedBox(height: 8),
                 TextField(

@@ -1,8 +1,8 @@
 // 角色路由：列表/创建/详情/更新/删除/扩写/模板/设置/状态
 import { Router } from 'express';
 import { requireAuth } from '../auth/middleware.js';
-import { asyncHandler, badRequest, notFound } from '../core/errors.js';
-import { get, all, run } from '../db/index.js';
+import { asyncHandler, badRequest, notFound, AppError } from '../core/errors.js';
+import { get, all, run, tx } from '../db/index.js';
 import { nowIso, uuid, asInt, clamp, truncate } from '../core/util.js';
 import { encryptJson, decryptJson } from '../core/crypto.js';
 import {
@@ -19,6 +19,7 @@ import {
 import { chatText } from '../ai/provider.js';
 import { recordUsage } from '../ai/usage.js';
 import { audit } from '../services/audit.js';
+import { broadcast } from '../realtime/hub.js';
 import logger from '../core/logger.js';
 
 const FIELD_CN = {
@@ -115,6 +116,12 @@ function sanitizeSettings(input = {}) {
   }
   if (input.activeReply !== undefined) patch.activeReply = Boolean(input.activeReply);
   if (input.qzoneEnabled !== undefined) patch.qzoneEnabled = Boolean(input.qzoneEnabled);
+  if (input.userAddress !== undefined) {
+    const address = String(input.userAddress ?? '').trim();
+    if (address.length > 20) throw badRequest('称呼最多 20 个字符', 'user_address_too_long');
+    patch.userAddress = address;
+  }
+  if (input.qqEnabled !== undefined) patch.qqEnabled = Boolean(input.qqEnabled);
   if (input.timezone !== undefined) {
     const tz = String(input.timezone || '').trim();
     if (!tz || !TIMEZONE_RE.test(tz)) throw badRequest('时区格式不正确', 'timezone_invalid');
@@ -145,6 +152,73 @@ function listTemplates(userId) {
       createdAt: row.created_at,
     }),
   );
+}
+
+// ---------- v1.2.0 QQ 单角色接入 ----------
+
+function boundOther(userId, characterId) {
+  const row = get(
+    'SELECT id FROM characters WHERE user_id = ? AND qq_enabled = 1 AND archived = 0 AND id <> ? LIMIT 1',
+    userId,
+    characterId,
+  );
+  return row ? getCharacter(userId, row.id, { includeArchived: true }) : null;
+}
+
+/**
+ * 应用 QQ 接入变更（全账号仅一个角色接入）：
+ * - want=false → 解除当前角色接入
+ * - want=true 且无其他角色接入 → 直接接入
+ * - want=true 且已有其他角色接入 → 未确认抛 409 qq_binding_conflict，确认后切换
+ */
+function applyQqBinding(userId, character, want, confirmReplace) {
+  return tx(() => {
+    const current = boundOther(userId, character.id);
+    if (!want) {
+      run('UPDATE characters SET qq_enabled = 0 WHERE id = ? AND user_id = ?', character.id, userId);
+      saveSettings(character.id, userId, { qqEnabled: false });
+      return { current, next: null };
+    }
+    if (current) {
+      if (!confirmReplace) {
+        throw new AppError(409, 'qq_binding_conflict', '是否更换接入对象？', {
+          current: { id: current.id, name: current.name },
+          next: { id: character.id, name: character.name },
+        });
+      }
+      run('UPDATE characters SET qq_enabled = 0 WHERE user_id = ? AND qq_enabled = 1', userId);
+      saveSettings(current.id, userId, { qqEnabled: false });
+    }
+    run('UPDATE characters SET qq_enabled = 1 WHERE id = ? AND user_id = ?', character.id, userId);
+    saveSettings(character.id, userId, { qqEnabled: true });
+    return { current, next: character };
+  });
+}
+
+async function notifyQqBinding(userId, current, next) {
+  try {
+    const user = get('SELECT qq FROM users WHERE id = ?', userId);
+    if (!user?.qq) return;
+    const text = next && current
+      ? `QQ 接入已从「${current.name}」换成「${next.name}」，之后由「${next.name}」陪你聊天啦~`
+      : next
+        ? `「${next.name}」已接入 QQ，可以在这里直接聊天啦~`
+        : current
+          ? `已关闭「${current.name}」的 QQ 接入。`
+          : '';
+    if (!text) return;
+    const { sendPrivate } = await import('../onebot/server.js');
+    if (typeof sendPrivate === 'function') await sendPrivate(user.qq, text);
+  } catch (err) {
+    logger.warn('QQ 接入变更通知发送失败', err?.message || err);
+  }
+}
+
+function bindPayload(current, next) {
+  return {
+    current: current ? { id: current.id, name: current.name } : null,
+    next: next ? { id: next.id, name: next.name } : null,
+  };
 }
 
 // ---------- LLM 扩写 ----------
@@ -344,7 +418,25 @@ export default function register() {
 
     validateName(profile);
     const settings = body.settings ? sanitizeSettings(body.settings) : undefined;
-    const character = createCharacter(req.userId, { ...profile, ...(settings ? { settings } : {}) });
+    // v1.2.0：创建时直接要求接入 QQ，若已有其他角色接入则先返回冲突（不创建脏数据）
+    if (settings?.qqEnabled) {
+      const current = get(
+        'SELECT id FROM characters WHERE user_id = ? AND qq_enabled = 1 AND archived = 0 LIMIT 1',
+        req.userId,
+      );
+      if (current) {
+        const cur = getCharacter(req.userId, current.id, { includeArchived: true });
+        throw new AppError(409, 'qq_binding_conflict', '是否更换接入对象？', {
+          current: { id: cur.id, name: cur.name },
+          next: { id: null, name: profile.name },
+        });
+      }
+    }
+    let character = createCharacter(req.userId, { ...profile, ...(settings ? { settings } : {}) });
+    if (settings?.qqEnabled) {
+      applyQqBinding(req.userId, character, true, true);
+      character = getCharacter(req.userId, character.id, { includeArchived: true });
+    }
     audit(req.userId, 'character.create', character.id, { name: character.name }, req.ip);
     res.status(201).json({ character });
   });
@@ -362,8 +454,18 @@ export default function register() {
     if (body.archived !== undefined) patch.archived = Boolean(body.archived);
     if (body.settings !== undefined) patch.settings = sanitizeSettings(body.settings);
     if (!Object.keys(patch).length) throw badRequest('没有可更新的人设字段', 'empty_patch');
+    // v1.2.0：settings 中夹带 qqEnabled 时同样走单角色接入校验
+    let binding = null;
+    if (patch.settings?.qqEnabled !== undefined) {
+      binding = applyQqBinding(req.userId, existing, patch.settings.qqEnabled, Boolean(body.confirmReplace ?? body.settings?.confirmReplace));
+    }
     const character = updateCharacter(req.userId, existing.id, patch);
     if (!character) throw notFound('角色不存在', 'character_not_found');
+    if (binding) {
+      broadcast(req.userId, { type: 'qq_binding', ...bindPayload(binding.current, binding.next), at: nowIso() });
+      void notifyQqBinding(req.userId, binding.current, binding.next);
+      audit(req.userId, 'character.qq_binding', character.id, bindPayload(binding.current, binding.next), req.ip);
+    }
     audit(req.userId, 'character.update', character.id, { fields: Object.keys(patch) }, req.ip);
     res.json({ character });
   });
@@ -379,16 +481,33 @@ export default function register() {
   // ---------- 设置 ----------
   r.get('/:id/settings', (req, res) => {
     const character = requireCharacter(req);
-    res.json({ characterId: character.id, settings: getSettings(character.id, req.userId) });
+    const settings = getSettings(character.id, req.userId);
+    settings.qqEnabled = Boolean(character.qqEnabled);
+    res.json({ characterId: character.id, settings });
   });
 
   r.put('/:id/settings', (req, res) => {
     const character = requireCharacter(req);
-    const patch = sanitizeSettings(req.body || {});
+    const body = req.body || {};
+    const patch = sanitizeSettings(body);
     if (!Object.keys(patch).length) throw badRequest('没有可保存的设置项', 'empty_patch');
+
+    // v1.2.0：QQ 单角色接入（可能与 settings 其它字段一起保存）
+    let binding = null;
+    if (patch.qqEnabled !== undefined) {
+      binding = applyQqBinding(req.userId, character, patch.qqEnabled, Boolean(body.confirmReplace));
+    }
     const settings = saveSettings(character.id, req.userId, patch);
+
+    if (binding) {
+      const payload = bindPayload(binding.current, binding.next);
+      broadcast(req.userId, { type: 'qq_binding', ...payload, at: nowIso() });
+      void notifyQqBinding(req.userId, binding.current, binding.next);
+      audit(req.userId, 'character.qq_binding', character.id, payload, req.ip);
+    }
     audit(req.userId, 'character.settings', character.id, { fields: Object.keys(patch) }, req.ip);
-    res.json({ characterId: character.id, settings });
+    settings.qqEnabled = Boolean(binding ? binding.next !== null : character.qqEnabled);
+    res.json({ characterId: character.id, settings, ...(binding ? { binding: bindPayload(binding.current, binding.next) } : {}) });
   });
 
   // ---------- 状态 ----------
@@ -398,6 +517,33 @@ export default function register() {
     const fresh = getCharacter(req.userId, character.id, { includeArchived: true });
     res.json({ characterId: fresh.id, state: fresh.state });
   });
+
+  // v1.2.0（API 14.3）：立即刷新角色状态，5 分钟冷却
+  r.post(
+    '/:id/status/refresh',
+    asyncHandler(async (req, res) => {
+      const character = requireCharacter(req);
+      const { refreshStatusNow } = await import('../ai/status.js');
+      const result = await refreshStatusNow({ userId: req.userId, characterId: character.id });
+      if (!result?.ok) {
+        if (result?.reason === 'cooldown') {
+          throw new AppError(429, 'status_cooldown', '刷新太频繁啦，请稍后再试', {
+            retryAfterSec: result.retryAfterSec,
+            nextAllowedAt: result.nextAllowedAt,
+          });
+        }
+        if (result?.reason === 'character_not_found') throw notFound('角色不存在', 'character_not_found');
+        if (result?.reason === 'hard_limit') {
+          throw new AppError(400, 'hard_limit', 'Token 已达硬性限额，角色服务已暂停');
+        }
+        throw new AppError(502, 'status_refresh_failed', '状态刷新失败，请稍后再试', {
+          reason: result?.reason || 'unknown',
+          error: result?.error || null,
+        });
+      }
+      res.json({ ok: true, state: result.state, flags: result.flags || null, nextAllowedAt: result.nextAllowedAt });
+    }),
+  );
 
   return r;
 }

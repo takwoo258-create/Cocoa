@@ -162,6 +162,18 @@ class IntimacyResult {
       );
 }
 
+class ModelCallCount {
+  const ModelCallCount({required this.model, this.calls = 0});
+
+  final String model;
+  final int calls;
+
+  factory ModelCallCount.fromJson(Map<String, dynamic> j) => ModelCallCount(
+        model: asString(j['model'], '未知模型'),
+        calls: asInt(j['calls']),
+      );
+}
+
 class CharacterOverview {
   const CharacterOverview({
     this.chatCount = 0,
@@ -170,6 +182,8 @@ class CharacterOverview {
     this.moodAbnormal = 0,
     this.companionDays = 0,
     this.intimacy = 0,
+    this.calls = 0,
+    this.callsByModel = const <ModelCallCount>[],
   });
 
   final int chatCount;
@@ -178,6 +192,10 @@ class CharacterOverview {
   final int moodAbnormal;
   final int companionDays;
   final double intimacy;
+
+  /// v1.2.0：模型调用次数。
+  final int calls;
+  final List<ModelCallCount> callsByModel;
 
   static const CharacterOverview empty = CharacterOverview();
 
@@ -189,6 +207,10 @@ class CharacterOverview {
         moodAbnormal: asInt(j['moodAbnormal']),
         companionDays: asInt(j['companionDays']),
         intimacy: asDouble(j['intimacy']),
+        calls: asInt(j['calls']),
+        callsByModel: asMapList(j['callsByModel'])
+            .map(ModelCallCount.fromJson)
+            .toList(),
       );
 }
 

@@ -624,16 +624,57 @@ class _StatsPageState extends State<StatsPage> {
       _countCard('创作文集', _overview.bookCount, Icons.menu_book_outlined),
       _countCard('健康异常', _overview.healthAbnormal, Icons.healing_outlined),
       _countCard('心情异常', _overview.moodAbnormal, Icons.mood_bad_outlined),
+      _countCard('调用次数', _overview.calls, Icons.bolt_outlined),
     ];
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Row(
-        children: <Widget>[
-          for (int i = 0; i < items.length; i++) ...<Widget>[
-            Expanded(child: items[i]),
-            if (i != items.length - 1) const SizedBox(width: 8),
-          ],
-        ],
+      child: LayoutBuilder(
+        builder: (BuildContext ctx, BoxConstraints c) {
+          final double itemWidth = (c.maxWidth - 24) / 4;
+          return Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: items
+                .map((Widget item) => SizedBox(width: itemWidth, child: item))
+                .toList(),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _callsSection() {
+    final List<ModelCallCount> list = _overview.callsByModel;
+    if (list.isEmpty) return const SizedBox.shrink();
+    return SectionCard(
+      title: '按模型调用次数',
+      child: Column(
+        children: list
+            .map(
+              (ModelCallCount m) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: Text(
+                        m.model,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                    Text(
+                      '${m.calls} 次',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.cocoa,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+            .toList(),
       ),
     );
   }
@@ -832,6 +873,8 @@ class _StatsPageState extends State<StatsPage> {
             const SizedBox(height: 6),
             _modelsSection(),
           ],
+          const SizedBox(height: 6),
+          _callsSection(),
         ],
       ),
     );

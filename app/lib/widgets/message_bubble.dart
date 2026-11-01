@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../core/api_client.dart';
+import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
 import '../models/chat_message.dart';
@@ -178,6 +179,24 @@ class MessageBubble extends StatelessWidget {
         duration: message.meta['duration'],
       );
     }
+    final String thinking = asString(message.meta['thinking']);
+    if (message.fromAgent && thinking.isNotEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          _ThinkingPanel(thinking: thinking),
+          const SizedBox(height: 6),
+          Text(
+            message.content,
+            style: const TextStyle(
+              fontSize: 14,
+              height: 1.45,
+              color: AppColors.ink,
+            ),
+          ),
+        ],
+      );
+    }
     return Text(
       message.content,
       style: const TextStyle(fontSize: 14, height: 1.45, color: AppColors.ink),
@@ -274,6 +293,84 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
           Text(
             seconds > 0 ? "语音 $seconds''" : '语音消息',
             style: const TextStyle(fontSize: 13, color: AppColors.ink),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+/// v1.2.0：思考内容折叠面板（meta.thinking）。
+class _ThinkingPanel extends StatefulWidget {
+  const _ThinkingPanel({required this.thinking});
+
+  final String thinking;
+
+  @override
+  State<_ThinkingPanel> createState() => _ThinkingPanelState();
+}
+
+class _ThinkingPanelState extends State<_ThinkingPanel> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppColors.sand.withAlpha(120),
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: AppColors.sand),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Icon(
+                  Icons.psychology_outlined,
+                  size: 13,
+                  color: AppColors.rose,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _expanded ? '收起思考' : '查看思考',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: AppColors.cocoa,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 14,
+                  color: AppColors.cocoa,
+                ),
+              ],
+            ),
+          ),
+          AnimatedCrossFade(
+            firstChild: const SizedBox(width: double.infinity),
+            secondChild: Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                widget.thinking,
+                style: const TextStyle(
+                  fontSize: 11,
+                  height: 1.55,
+                  color: AppColors.inkSoft,
+                ),
+              ),
+            ),
+            crossFadeState: _expanded
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 160),
           ),
         ],
       ),

@@ -261,13 +261,12 @@ export async function judgeWakeup({ userId, characterId, text = '', provider = n
     const wakeup = parsed.type === 'wakeup' ? parsed.wakeup : 0;
     if (wakeup !== 1) return { ok: true, wakeup: 0, reason: 'keep_sleeping' };
 
-    updateState(characterId, { sleepState: 'awake_override' });
+    updateState(characterId, { sleepState: 'awake' });
     broadcast(userId, {
       type: 'state',
       state: {
         ...state,
         sleepState: 'awake',
-        wakeOverride: true,
         updatedAt: nowIso(),
       },
     });

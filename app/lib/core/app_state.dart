@@ -11,6 +11,7 @@ import '../services/chat_service.dart';
 import '../services/config_service.dart';
 import '../services/media_service.dart';
 import '../services/memory_service.dart';
+import '../services/share_service.dart';
 import '../services/social_service.dart';
 import '../services/stats_service.dart';
 import '../services/version_service.dart';
@@ -42,6 +43,7 @@ class AppState extends ChangeNotifier {
   late AdminService adminService;
   late VersionService versionService;
   late SocialService socialService;
+  late ShareService shareService;
 
   User? user;
   AppConfig? config;
@@ -75,7 +77,7 @@ class AppState extends ChangeNotifier {
   int get softTokens => asInt(asMap(preferences['limits'])['softTokens']);
   bool get limitsEnabled => asBool(asMap(preferences['limits'])['enabled'], true);
 
-  /// v1.1.0：强制更新优先，忽略版本不能绕过。
+  /// v1.1.0：需要更新优先，忽略版本不能绕过。
   bool get forceUpdateAvailable => versionCheck?.forceUpdate ?? false;
 
   bool get updateAvailable {
@@ -106,6 +108,7 @@ class AppState extends ChangeNotifier {
     adminService = AdminService(api);
     versionService = VersionService(api);
     socialService = SocialService(api);
+    shareService = ShareService(api);
   }
 
   Future<void> boot() async {

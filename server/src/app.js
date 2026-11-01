@@ -16,6 +16,9 @@ import adminRouter from './routes/admin.js';
 import mediaRouter from './routes/media.js';
 import onebotRouter from './routes/onebot.js';
 import versionRouter from './routes/version.js';
+import sharesRouter from './routes/shares.js';
+import integrationsRouter from './routes/integrations.js';
+import configTestRouter from './routes/config-test.js';
 
 export function createApp() {
   const app = express();
@@ -43,7 +46,7 @@ export function createApp() {
     res.json({
       ok: true,
       name: 'cocoa',
-      version: '1.1.0',
+      version: '1.2.0',
       time: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
     });
@@ -51,6 +54,7 @@ export function createApp() {
 
   app.use('/api/auth', authRouter());
   app.use('/api/users', usersRouter());
+  app.use('/api/config', configTestRouter());
   app.use('/api/config', configRouter());
   // 角色路由先挂载：只处理 /、/expand、/templates、/:id、/:id/settings、/:id/state
   app.use('/api/characters', charactersRouter());
@@ -64,6 +68,8 @@ export function createApp() {
   app.use('/api/admin', adminRouter());
   app.use('/api/media', mediaRouter());
   app.use('/api/version', versionRouter());
+  app.use('/api/shares', sharesRouter());
+  app.use('/api/integrations', integrationsRouter());
   app.use('/onebot', onebotRouter());
   app.use('/api/onebot', onebotRouter());
 

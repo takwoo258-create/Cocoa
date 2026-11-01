@@ -69,18 +69,19 @@ test('版本检查：返回结构完整（GitHub 不可用时也不 5xx）', asy
   }
 });
 
-test('强制更新：Release 说明标记解析', async () => {
+test('版本更新要求：Release 说明标记解析', async () => {
   const { releaseForcesUpdate } = await import('../src/routes/version.js');
   assert.equal(releaseForcesUpdate('普通更新'), false);
   assert.equal(releaseForcesUpdate('重要 [force] 请立刻更新'), true);
   assert.equal(releaseForcesUpdate('<!-- cocoa:force -->'), true);
-  assert.equal(releaseForcesUpdate('本版支持强制更新能力，但不强制'), false);
-  assert.equal(releaseForcesUpdate('[强制更新] 最低 1.1.0'), true);
+  assert.equal(releaseForcesUpdate('本版支持版本更新要求能力，但不强制'), false);
+  assert.equal(releaseForcesUpdate('[版本更新要求] 最低 1.1.0'), true);
   assert.equal(releaseForcesUpdate('说明：在 Release 正文写 `[force]` 才会强制'), false);
+  assert.equal(releaseForcesUpdate('[版本更新要求] 最低 1.1.0'), true);
   assert.equal(releaseForcesUpdate('```\n[force]\n```'), false);
 });
 
-test('强制更新：管理端 update.force 生效', async () => {
+test('版本更新要求：管理端 update.force 生效', async () => {
   const save = await api('/api/admin/settings', {
     method: 'PUT', tokenOverride: adminToken,
     body: { update: { force: true, minVersion: '1.1.0' } },

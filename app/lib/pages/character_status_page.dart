@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../core/layout.dart';
 
 import '../core/api_client.dart';
 import '../core/app_state.dart';
 import '../core/global.dart';
+import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
 import '../models/character.dart';
@@ -29,6 +32,9 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
   late CharacterState _state;
   bool _loading = true;
   bool _waking = false;
+  bool _refreshing = false;
+  Timer? _cooldownTimer;
+  int _cooldownSec = 0;
 
   @override
   void initState() {
@@ -60,9 +66,34 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
     final AppState state = AppScope.read(context);
     setState(() => _waking = true);
     try {
-      final int wakeup = await state.chatService.wake(widget.character.id);
+      final WakeResult result =
+          await state.chatService.wake(widget.character.id);
       if (!mounted) return;
-      showToast(wakeup == 1 ? '已经去叫 ta 了，等等看…' : 'ta 还在睡，暂时没有回应');
+      setState(() {
+        if (result.state != null) _state = result.state!;
+      });
+      if (result.reply.trim().isNotEmpty) {
+        await showDialog<void>(
+          context: context,
+          builder: (BuildContext ctx) => AlertDialog(
+            title: Text('${widget.character.name} 醒了'),
+            content: SingleChildScrollView(
+              child: Text(
+                result.reply,
+                style: const TextStyle(fontSize: 13, height: 1.6),
+              ),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('知道啦'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        showToast('叫醒成功');
+      }
       await _load();
     } on ApiException catch (e) {
       showToast(e.message, isError: true);
@@ -71,6 +102,76 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
     } finally {
       if (mounted) setState(() => _waking = false);
     }
+  }
+
+  @override
+  void dispose() {
+    _cooldownTimer?.cancel();
+    super.dispose();
+  }
+
+  void _applyCooldown(String? nextAllowedAt, {int fallbackSec = 300}) {
+    DateTime? next = nextAllowedAt == null ? null : parseUtc8(nextAllowedAt);
+    next ??= DateTime.now().add(Duration(seconds: fallbackSec));
+    final int seconds = next.difference(DateTime.now()).inSeconds;
+    _cooldownTimer?.cancel();
+    setState(() => _cooldownSec = seconds > 0 ? seconds : 0);
+    if (_cooldownSec <= 0) return;
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (Timer t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() {
+        _cooldownSec -= 1;
+        if (_cooldownSec <= 0) {
+          _cooldownSec = 0;
+          t.cancel();
+        }
+      });
+    });
+  }
+
+  Future<void> _refreshStatus() async {
+    final AppState state = AppScope.read(context);
+    setState(() => _refreshing = true);
+    try {
+      final StatusRefreshResult r =
+          await state.chatService.refreshStatus(widget.character.id);
+      if (!mounted) return;
+      setState(() {
+        if (r.state != null) _state = r.state!;
+        _loading = false;
+      });
+      _applyCooldown(r.nextAllowedAt);
+      showToast('角色状态已刷新');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      if (e.code == 'status_cooldown') {
+        final Map<String, dynamic> detail = asMap(e.detail);
+        final int retry = asInt(detail['retryAfterSec'], 300);
+        _applyCooldown(
+          asStringOrNull(detail['nextAllowedAt']),
+          fallbackSec: retry,
+        );
+        showToast(
+          '状态刷新冷却中，还需 ${retry ~/ 60} 分 ${retry % 60} 秒',
+          isError: true,
+        );
+      } else {
+        showToast(e.message, isError: true);
+      }
+    } catch (e) {
+      showToast('状态刷新失败：$e', isError: true);
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
+  }
+
+  String get _cooldownLabel {
+    final int m = _cooldownSec ~/ 60;
+    final String sec = (_cooldownSec % 60).toString().padLeft(2, '0');
+    return '冷却 $m:$sec';
   }
 
   Widget _kvRow(String label, String value, {IconData? icon}) {
@@ -184,9 +285,19 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
                 children: <Widget>[
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: _loading ? null : _load,
-                      icon: const Icon(Icons.refresh, size: 17),
-                      label: const Text('刷新状态'),
+                      onPressed: (_refreshing || _cooldownSec > 0)
+                          ? null
+                          : _refreshStatus,
+                      icon: _refreshing
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh, size: 17),
+                      label: Text(
+                        _cooldownSec > 0 ? _cooldownLabel : '刷新状态',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -214,11 +325,13 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
                 ],
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
               child: Text(
-                '角色每 10 分钟根据人设、世界与身体状态刷新一次；休息时强行叫醒可能带来不必要的麻烦。',
-                style: TextStyle(
+                _cooldownSec > 0
+                    ? '状态刷新冷却中（5 分钟），还需 ${_cooldownSec ~/ 60} 分 ${_cooldownSec % 60} 秒。'
+                    : '角色每 10 分钟自动刷新状态；手动刷新会立即请求模型，冷却 5 分钟。休息时强行叫醒可能带来不必要的麻烦。',
+                style: const TextStyle(
                   fontSize: 10.5,
                   color: AppColors.inkSoft,
                   height: 1.5,

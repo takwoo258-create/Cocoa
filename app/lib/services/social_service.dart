@@ -7,6 +7,11 @@ class SocialService {
 
   final ApiClient api;
 
+  /// 机器人 QQ / 连接状态（v1.2.0，角色页展示）。
+  Future<Map<String, dynamic>> onebotStatus() async {
+    return asMap(await api.get('/onebot/status', silent: true));
+  }
+
   /// content 会自动截断到 1000 字；未连接 NapCat 时后端返回 503。
   Future<Map<String, dynamic>> shareQzone({
     required String content,

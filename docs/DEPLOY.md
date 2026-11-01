@@ -200,9 +200,44 @@ systemctl restart cocoa
 
 ---
 
-## 9. 反向代理与 HTTPS（可选）
+## 9. 反向代理与 HTTPS
 
-有域名后可用 Nginx：`deploy/nginx.conf.example` 已包含 80/443 两段与 WebSocket 透传。
+### 线上现状（已启用：Caddy + Let's Encrypt）
+
+| 项 | 值 |
+| --- | --- |
+| 域名 | `120-26-204-70.sslip.io`（sslip.io 泛解析 → 120.26.204.70，无需自备 DNS） |
+| 入口 | `https://120-26-204-70.sslip.io` → Caddy → `127.0.0.1:8787` |
+| 证书 | Let's Encrypt（R11 中间证书），`CN=120-26-204-70.sslip.io`，90 天有效，自动续签 |
+| HTTP | 80 端口自动 308 跳转到 HTTPS（`deploy/Caddyfile` 里的 `:80` 兜底块） |
+| 直连 | `http://120.26.204.70:8787` 仍然保留，供旧客户端与 WS 使用 |
+| 组件 | `/usr/local/bin/caddy`（v2.11.7 静态二进制）+ `caddy.service`，配置 `/etc/caddy/Caddyfile` |
+
+安装/重装（服务器内）：
+
+```bash
+bash deploy/caddy-setup.sh 120-26-204-70.sslip.io
+# 无外网时先本机下载再上传：CADDY_TARBALL=/tmp/caddy.tar.gz bash deploy/caddy-setup.sh <域名>
+```
+
+要点：
+
+- `deploy/Caddyfile` 已包含 gzip/zstd 压缩、HSTS、`X-Content-Type-Options`，并把 `/ws`、`/onebot/` 的 Upgrade 头透传（Caddy 默认即透传，`flush_interval -1` 保证实时性）；
+- **续签窗口**：Caddy/certmagic 默认在证书剩余有效期约 1/3（90 天证书 ≈ 到期前 30 天）时续签，并每日检查；本仓库 Caddyfile 里另有 `renewal_window_ratio 0.34`（≈ 剩余 30 天），若 Caddy 版本不支持该项，`caddy-setup.sh` 会自动去掉并回落到默认窗口；
+- 查看证书与到期时间：
+
+```bash
+echo | openssl s_client -connect 120-26-204-70.sslip.io:443 -servername 120-26-204-70.sslip.io 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+- Caddy 启动日志：`journalctl -u caddy -n 100 --no-pager`；证书目录 `/var/lib/caddy/.local/share/caddy/certificates`；
+- **前置条件**：云安全组必须放行 80/TCP 与 443/TCP（Let's Encrypt 的 HTTP-01 校验依赖 80），否则证书申请会失败；
+- NapCat 反向 WS 若走公网，建议改成 `wss://120-26-204-70.sslip.io/onebot/ws?access_token=…`。
+
+### Nginx 备选方案
+
+`deploy/nginx.conf.example` 仍保留 Nginx 版本（80/443 两段 + WebSocket 透传），适合已有 Nginx 的环境：
 
 ```bash
 cp deploy/nginx.conf.example /etc/nginx/conf.d/cocoa.conf
@@ -210,11 +245,7 @@ sed -i 's/cocoa.example.com/<你的域名>/g' /etc/nginx/conf.d/cocoa.conf
 nginx -t && systemctl reload nginx
 ```
 
-要点：
-
-- `/ws`（实时事件）与 `/onebot/`（NapCat 上报）必须保留 `Upgrade` / `Connection` 头，否则连接 400；
-- `client_max_body_size` ≥ 16m（图片/语音上传）；
-- 上 HTTPS 后把 `.env` 的 `PUBLIC_URL` 改成 `https://域名`。
+> ⚠️ 不要同时启用 Caddy 与 Nginx 抢占 80/443；两者选一。
 
 没有域名时保持 http，客户端把服务器地址写成 `http://IP:8787`。
 
@@ -290,12 +321,48 @@ node deploy/deploy.mjs rollback             # 本机远程触发
 
 > 回滚只回退**代码**，不回退数据。若新版本做过破坏性 schema 变更，回滚前先用 `backup.sh` 留一份快照，并评估旧代码能否读新库。
 
+### 12.1 自升级（Release 资产 `Cocoa-backend-vX.Y.Z.zip`）
+
+v1.2.0 起支持「从 GitHub Release 自助升级」，由 `deploy/upgrade.sh` 完成，管理端与 backend-platform API 都调用它：
+
+```bash
+/opt/cocoa/deploy/upgrade.sh v1.2.0            # 后台执行（立即返回，脚本已 setsid detach）
+/opt/cocoa/deploy/upgrade.sh v1.2.0 --check    # 只探测资产，退出码 3 = 资产不存在
+/opt/cocoa/deploy/upgrade.sh v1.2.0 --foreground  # 前台执行，便于观察/演练
+```
+
+流程：
+1. 下载 `https://github.com/takwoo258-create/Cocoa/releases/download/<TAG>/Cocoa-backend-<TAG>.zip`（缺失时回退 GitHub source archive）；
+2. 解压到 `/opt/cocoa.new`，校验 `package.json` 的 `version` 必须等于 TAG；
+3. 停 `cocoa.service`，把当前代码快照到 `/opt/cocoa.prev`（**不含 data**）；
+4. 交换目录，`data/`、`.env`、`.masterkey`、`.admin-initial-password` 原样带过去；
+5. `npm ci --omit=dev` → 启动 → 轮询 `/api/health`，版本号必须等于 TAG；
+6. 任一步失败自动回滚到 `/opt/cocoa.prev`，并把坏版本留在 `/opt/cocoa.failed-<ts>`。
+
+进度与结果写在 `/opt/cocoa/data/upgrade-status.json`（API 读取并回写 upgrade_logs），日志追加到 `/opt/cocoa/data/upgrade.log`：
+
+```json
+{"running": false, "status": "success", "tag": "v1.2.0", "fromVersion": "1.1.0", "toVersion": "1.2.0",
+ "message": "升级成功：v1.2.0", "progress": 100, "startedAt": "…", "finishedAt": "…", "log": "/opt/cocoa/data/upgrade.log"}
+```
+
+API 契约（backend-platform 侧）：`spawn('/opt/cocoa/deploy/upgrade.sh', [tag])`，tag 已校验 `^v\d+\.\d+\.\d+(-pre)?$`；可用环境变量 `COCOA_UPGRADE_TAG / COCOA_UPGRADE_LOG / COCOA_UPGRADE_STATUS / COCOA_UPGRADE_LOG_ID / COCOA_UPGRADE_FROM / COCOA_ROOT`。脚本会先 `setsid` 脱离父进程，因此服务重启不会中断升级。
+
+打包后端发布包（本机）：
+
+```bash
+bash scripts/package-backend.sh /data/dsh/home
+# → Cocoa-backend-v1.2.0.zip（含 server/src、package.json、package-lock.json、deploy、docs、README、LICENSE、updateX.Y.Z.md）
+```
+
 ---
 
 ## 13. 冒烟与验收
 
 ```bash
-# 存活
+# 存活（公网 HTTPS）
+curl -fsS https://120-26-204-70.sslip.io/api/health
+# 直连
 curl -fsS http://127.0.0.1:8787/api/health
 
 # 注册（SMTP 未配置时响应会带 devCode，仅开发环境）

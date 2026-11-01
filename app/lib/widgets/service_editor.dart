@@ -113,6 +113,27 @@ class ServiceEditorState extends State<ServiceEditor> {
     _ctxCtrl.text = value == null ? '' : value.toString();
   }
 
+  /// 模型列表行内编辑：保存指定模型的上下文覆盖（value=null 表示清除）。
+  Future<void> _saveContextForModel(String model, int? value) async {
+    final Map<String, dynamic> limits = Map<String, dynamic>.from(
+      asMap(widget.state.preferences['contextLimits']),
+    );
+    limits[model] = value;
+    await widget.state.savePreferences(<String, dynamic>{
+      'contextLimits': limits,
+    });
+    if (mounted) {
+      _setStatus(
+        value == null ? '$model 已恢复模型窗口' : '$model 上下文已设为 $value',
+        true,
+      );
+    }
+    if (_modelCtrl.text.trim() == model) {
+      _loadContextLimit();
+      await _loadModelInfo(id: model);
+    }
+  }
+
   Future<void> _saveContextLimit({required bool asDefault}) async {
     final int? value = int.tryParse(_ctxCtrl.text.trim());
     if (value == null || value <= 0) {
@@ -252,6 +273,8 @@ class ServiceEditorState extends State<ServiceEditor> {
             source: r.source,
             warning: sheetWarning,
             attempts: r.attempts,
+            contextLimits: asMap(widget.state.preferences['contextLimits']),
+            onSaveContext: _saveContextForModel,
           ),
         );
         if (action == null) break;
@@ -594,6 +617,8 @@ class _ModelSheet extends StatefulWidget {
     required this.source,
     required this.warning,
     required this.attempts,
+    required this.contextLimits,
+    required this.onSaveContext,
   });
 
   final List<ModelInfo> models;
@@ -601,6 +626,8 @@ class _ModelSheet extends StatefulWidget {
   final String source;
   final String warning;
   final List<Map<String, dynamic>> attempts;
+  final Map<String, dynamic> contextLimits;
+  final Future<void> Function(String model, int? value) onSaveContext;
 
   @override
   State<_ModelSheet> createState() => _ModelSheetState();
@@ -609,6 +636,81 @@ class _ModelSheet extends StatefulWidget {
 class _ModelSheetState extends State<_ModelSheet> {
   String _query = '';
   bool _showAttempts = false;
+  late final Map<String, dynamic> _limits =
+      Map<String, dynamic>.from(widget.contextLimits);
+
+  String _effectiveContext(ModelInfo m) {
+    final dynamic override = _limits[m.id];
+    if (override != null) return '${asInt(override)}';
+    return m.contextWindow > 0 ? '${m.contextWindow}' : '未知';
+  }
+
+  bool _hasOverride(ModelInfo m) => _limits[m.id] != null;
+
+  Future<void> _editContext(ModelInfo m) async {
+    final TextEditingController ctrl = TextEditingController(
+      text: _hasOverride(m) ? '${asInt(_limits[m.id])}' : '',
+    );
+    final String? value = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: Text('上下文长度 · ${m.id}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text(
+              '留空并点「清除覆盖」可恢复模型默认窗口；保存后写入 preferences.contextLimits。',
+              style: TextStyle(fontSize: 11, color: AppColors.inkSoft, height: 1.5),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: <TextInputFormatter>[
+                FilteringTextInputFormatter.digitsOnly,
+              ],
+              decoration: InputDecoration(
+                labelText: 'Token 数',
+                hintText: m.contextWindow > 0
+                    ? '模型窗口 ${m.contextWindow}'
+                    : '例如 128000',
+              ),
+            ),
+          ],
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('__clear__'),
+            child: const Text('清除覆盖'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (value == null || !mounted) return;
+    if (value == '__clear__') {
+      await widget.onSaveContext(m.id, null);
+      setState(() => _limits.remove(m.id));
+      return;
+    }
+    final int? parsed = int.tryParse(value);
+    if (parsed == null || parsed <= 0) {
+      if (mounted) showToast('请输入大于 0 的上下文长度');
+      return;
+    }
+    await widget.onSaveContext(m.id, parsed);
+    setState(() => _limits[m.id] = parsed);
+  }
 
   String _attemptText(Map<String, dynamic> a) {
     final String url = asString(a['url']);
@@ -726,7 +828,15 @@ class _ModelSheetState extends State<_ModelSheet> {
                 prefixIcon: Icon(Icons.search, size: 18),
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 2),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '点击右侧铅笔可直接修改该模型的上下文；点击行则选中模型。',
+                style: TextStyle(fontSize: 10, color: AppColors.inkSoft),
+              ),
+            ),
+            const SizedBox(height: 6),
             Flexible(
               child: ListView.separated(
                 shrinkWrap: true,
@@ -749,34 +859,48 @@ class _ModelSheetState extends State<_ModelSheet> {
                       padding: const EdgeInsets.only(top: 4),
                       child: CapabilityBadge(model: m, dense: true),
                     ),
-                    trailing: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
-                        Text(
-                          m.contextWindow > 0 ? m.contextLabel : '上下文未知',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: AppColors.inkSoft,
-                          ),
-                        ),
-                        if (m.contextSourceLabel.isNotEmpty ||
-                            widget.source == 'remote')
-                          Text(
-                            m.contextSourceLabel.isNotEmpty
-                                ? m.contextSourceLabel
-                                : '远程',
-                            style: const TextStyle(
-                              fontSize: 9,
-                              color: AppColors.inkSoft,
+                        Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: <Widget>[
+                            Text(
+                              '上下文 ${_effectiveContext(m)}'
+                              '${_hasOverride(m) ? '（覆盖）' : ''}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: _hasOverride(m)
+                                    ? AppColors.cocoa
+                                    : AppColors.inkSoft,
+                              ),
                             ),
-                          ),
-                        if (selected)
-                          const Icon(
-                            Icons.check_circle,
-                            size: 15,
-                            color: AppColors.cocoa,
-                          ),
+                            if (m.contextSourceLabel.isNotEmpty ||
+                                widget.source == 'remote')
+                              Text(
+                                m.contextSourceLabel.isNotEmpty
+                                    ? m.contextSourceLabel
+                                    : '远程',
+                                style: const TextStyle(
+                                  fontSize: 9,
+                                  color: AppColors.inkSoft,
+                                ),
+                              ),
+                            if (selected)
+                              const Icon(
+                                Icons.check_circle,
+                                size: 15,
+                                color: AppColors.cocoa,
+                              ),
+                          ],
+                        ),
+                        IconButton(
+                          tooltip: '设置该模型上下文',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.edit_outlined, size: 17),
+                          onPressed: () => _editContext(m),
+                        ),
                       ],
                     ),
                     onTap: () => Navigator.of(context).pop(m.id),

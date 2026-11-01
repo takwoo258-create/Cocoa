@@ -3,7 +3,7 @@ import express, { Router } from 'express';
 import { requireAuth, requireAdmin } from '../auth/middleware.js';
 import { asyncHandler, badRequest } from '../core/errors.js';
 import { sendPrivate, onebotStatus, sendQzonePost } from '../onebot/server.js';
-import { handleIncomingEvent, recordMessage } from '../onebot/handler.js';
+import { handleIncomingEvent, recordMessage, boundCharacter } from '../onebot/handler.js';
 import { getOnebotConfig } from '../services/settings.js';
 import { truncate } from '../core/util.js';
 
@@ -64,6 +64,20 @@ export default function register() {
       configured: Boolean(cfg.token || cfg.selfId),
       selfId: cfg.selfId || '',
       wsPath: cfg.wsPath || '/onebot/ws',
+    });
+  });
+
+  // v1.2.0：角色页展示机器人 QQ 与当前接入角色
+  r.get('/robot', requireAuth, (req, res) => {
+    const cfg = getOnebotConfig();
+    const status = onebotStatus();
+    const bound = boundCharacter(req.userId);
+    res.json({
+      selfId: cfg.selfId || status.selfId || '',
+      connected: Boolean(status.connected),
+      wsPath: cfg.wsPath || '/onebot/ws',
+      boundCharacterId: bound?.id || null,
+      boundCharacterName: bound?.name || null,
     });
   });
 

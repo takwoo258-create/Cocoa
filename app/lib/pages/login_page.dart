@@ -24,6 +24,9 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscure = true;
   bool _busy = false;
   bool _sending = false;
+  bool _rememberId = false;
+  bool _rememberPassword = false;
+  String? _savedPassword;
   int _cooldown = 0;
   Timer? _timer;
 
@@ -36,6 +39,89 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _regPassword = TextEditingController();
   final TextEditingController _regConfirm = TextEditingController();
   final TextEditingController _regCode = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadRemembered());
+  }
+
+  Future<void> _loadRemembered() async {
+    final AppState state = AppScope.read(context);
+    final String? identifier = await state.storage.readRememberedIdentifier();
+    final String? password = await state.storage.readRememberedPassword();
+    if (!mounted) return;
+    setState(() {
+      if (identifier != null && identifier.isNotEmpty) {
+        _identifier.text = identifier;
+        _rememberId = true;
+      }
+      if (password != null && password.isNotEmpty) {
+        _savedPassword = password;
+        _rememberPassword = true;
+      }
+    });
+  }
+
+  Future<void> _clearRememberedPassword({bool confirm = true}) async {
+    final AppState state = AppScope.read(context);
+    if (confirm) {
+      final bool ok = await confirmDialog(
+        context,
+        title: '清除记住的密码',
+        message: '下次登录需要重新输入密码，确定清除吗？',
+        confirmText: '清除',
+        danger: true,
+      );
+      if (!ok) return;
+    }
+    await state.storage.writeRememberedPassword(null);
+    if (!mounted) return;
+    setState(() {
+      _savedPassword = null;
+      _rememberPassword = false;
+      _password.clear();
+      _obscure = true;
+    });
+    showToast('已清除记住的密码，请重新输入');
+  }
+
+  Future<void> _toggleRememberId(bool value) async {
+    final AppState state = AppScope.read(context);
+    if (!value && _rememberId) {
+      final bool ok = await confirmDialog(
+        context,
+        title: '清除记住的账号',
+        message: '下次登录需要重新输入账号或邮箱，确定清除吗？',
+        confirmText: '清除',
+        danger: true,
+      );
+      if (!ok) return;
+      await state.storage.writeRememberedIdentifier(null);
+    }
+    if (!mounted) return;
+    setState(() => _rememberId = value);
+  }
+
+  Future<void> _toggleRememberPassword(bool value) async {
+    if (!value && _rememberPassword) {
+      await _clearRememberedPassword();
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _rememberPassword = value);
+  }
+
+  Future<void> _persistRemember(String identifier, String password) async {
+    final AppState state = AppScope.read(context);
+    await state.storage
+        .writeRememberedIdentifier(_rememberId ? identifier : null);
+    if (!_rememberPassword) {
+      await state.storage.writeRememberedPassword(null);
+    } else if (password.isNotEmpty) {
+      await state.storage.writeRememberedPassword(password);
+    }
+  }
 
   @override
   void dispose() {
@@ -110,7 +196,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _submit() async {
     final AppState state = AppScope.read(context);
     late final String identifier;
-    late final String password;
+    late String password;
     late final String code;
     late final String username;
     late final String email;
@@ -133,6 +219,9 @@ class _LoginPageState extends State<LoginPage> {
     } else {
       identifier = _identifier.text.trim();
       password = _password.text;
+      if (_loginMode == 'password' && password.isEmpty && _savedPassword != null) {
+        password = _savedPassword!;
+      }
       code = _code.text.trim();
       if (identifier.isEmpty) { showToast('请输入用户名或邮箱'); return; }
       if (_loginMode == 'password' && password.isEmpty) {
@@ -158,9 +247,12 @@ class _LoginPageState extends State<LoginPage> {
           : await state.authService.login(
               identifier: _identifier.text.trim(),
               mode: _loginMode,
-              password: _password.text,
+              password: password,
               code: _code.text.trim(),
             );
+      if (!_register) {
+        await _persistRemember(_identifier.text.trim(), password);
+      }
       await state.onLogin(r);
       if (!mounted) return;
       await enterApp(context);
@@ -292,17 +384,59 @@ class _LoginPageState extends State<LoginPage> {
             obscureText: _obscure,
             decoration: _dec(
               '密码',
+              hint: _savedPassword != null ? '••••••••（已记住，点击眼睛清除）' : null,
               suffix: IconButton(
                 icon: Icon(
                   _obscure ? Icons.visibility_off : Icons.visibility,
                   size: 18,
                 ),
-                onPressed: () => setState(() => _obscure = !_obscure),
+                onPressed: () {
+                  if (_savedPassword != null && _password.text.isEmpty) {
+                    _clearRememberedPassword(confirm: false);
+                  } else {
+                    setState(() => _obscure = !_obscure);
+                  }
+                },
               ),
             ),
           )
         else
           _codeRow(controller: _code, label: '邮箱验证码'),
+        if (_loginMode == 'password')
+          Row(
+            children: <Widget>[
+              Checkbox(
+                value: _rememberId,
+                onChanged: (bool? v) => _toggleRememberId(v ?? false),
+              ),
+              GestureDetector(
+                onTap: () => _toggleRememberId(!_rememberId),
+                child: const Text('记住账号', style: TextStyle(fontSize: 11.5)),
+              ),
+              const Spacer(),
+              Checkbox(
+                value: _rememberPassword,
+                onChanged: (bool? v) => _toggleRememberPassword(v ?? false),
+              ),
+              GestureDetector(
+                onTap: () => _toggleRememberPassword(!_rememberPassword),
+                child: const Text('记住密码', style: TextStyle(fontSize: 11.5)),
+              ),
+            ],
+          )
+        else
+          Row(
+            children: <Widget>[
+              Checkbox(
+                value: _rememberId,
+                onChanged: (bool? v) => _toggleRememberId(v ?? false),
+              ),
+              GestureDetector(
+                onTap: () => _toggleRememberId(!_rememberId),
+                child: const Text('记住账号', style: TextStyle(fontSize: 11.5)),
+              ),
+            ],
+          ),
       ],
     );
   }

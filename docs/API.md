@@ -279,7 +279,7 @@ broadcast(userId, event)
 
 ## 13. v1.1.0 增量
 
-### 13.1 版本检查强制更新
+### 13.1 版本检查与更新要求
 `GET /api/version/latest` 新增：
 ```json
 {"forceUpdate": true, "forceReason": "admin|min_version|release", "minVersion": "1.1.0"}
@@ -294,3 +294,62 @@ broadcast(userId, event)
 ```json
 {"update": {"force": false, "minVersion": "1.1.0"}}
 ```
+
+## 14. v1.2.0 增量
+
+### 14.1 用户代号与昵称
+`user` 对象新增 `code`（注册顺序 1..N，只读）与 `nickname`（即用户名，用于展示与角色默认称呼）。
+注册返回的 user 直接带 `code`。令牌有效期 3 天；每天首次访问自动延长 1 天，最长 4 天（`auth_tokens.last_renew_at`）。
+
+### 14.2 角色称呼与 QQ 接入
+角色 settings 新增 `userAddress`（角色对用户的称呼，空则用用户昵称）与 `qqEnabled`（是否接入 QQ）。
+`PUT /api/characters/:id/settings`：
+```json
+{"qqEnabled":true,"confirmReplace":false}
+```
+若已有其他角色接入 QQ 且未确认，返回 409：
+```json
+{"error":{"code":"qq_binding_conflict","message":"是否更换接入对象？",
+ "detail":{"current":{"id":"c_old","name":"旧角色"},"next":{"id":"c_new","name":"新角色"}}}}
+```
+传 `confirmReplace:true` 后切换，旧角色 `qqEnabled=false`；成功后 WS 推送 `{type:'qq_binding', current, next}` 并给用户 QQ 发送提示。
+`GET /api/characters/:id` 返回 `qqEnabled`；`GET /api/onebot/status` 的 `selfId` 即机器人 QQ，用于角色页展示。
+
+### 14.3 状态刷新与叫醒
+`POST /api/characters/:id/status/refresh`：立即调用模型刷新状态，冷却 5 分钟。
+成功 `{state, nextAllowedAt}`；冷却中 429 `{error:{code:"status_cooldown"}, detail:{retryAfterSec, nextAllowedAt}}`。
+`POST /api/characters/:id/wake`：解除睡眠并生成一次回复，返回 `{ok, state, reply?}`。
+
+### 14.4 模型分享
+分享对象用用户代号或邮箱定位。
+- `POST /api/shares`：
+```json
+{"target":"2","direction":"share|request","services":["chat","embedding"],
+ "duration":{"years":0,"months":0,"weeks":0,"days":3,"hours":0,"minutes":0},
+ "expiresAt":null,"permanent":false,"note":"随便用"}
+```
+`duration` 与 `expiresAt` 二选一，`permanent=true` 表示永久；`expiresAt` 为 UTC+8 本地时间字符串 `YYYY-MM-DD HH:mm:ss`。
+- `GET /api/shares?box=incoming|outgoing|active|history` → `{items:[share]}`
+- `GET /api/shares/pending` → 待处理（客户端启动弹窗）
+- `POST /api/shares/:id/respond` `{accept:true|false}`
+- `POST /api/shares/:id/revoke`
+`share` 对象：`{id,direction,status,owner:{id,code,nickname},target:{...},services,permanent,duration,expiresAt,note,createdAt,canRespond}`。
+通知：WS `{type:'share_request',share}`、`{type:'share_result',share}`、`{type:'share_expired',share}`；同时通过 OneBot 私聊与邮件通知。
+`GET /api/config` 返回 `shared:{chat:{shareId,ownerCode,ownerNickname,expiresAt,model},...}`；用户未配置的服务会自动使用有效分享。
+
+### 14.5 统计与管理端
+`GET /api/stats/overview` 新增 `calls` 与 `callsByModel:[{model,calls}]`。
+`GET /api/admin/server-status` → `{cpu:{percent,cores,load},memory:{total,used,free,percent},disk:{total,used,free,percent},network:{rxBytes,txBytes,rxRate,txRate},uptime,node,time}`。
+`GET /api/admin/upgrade/versions` → `[{tag,version,name,notes,publishedAt,asset}]`（GitHub Releases）。
+`POST /api/admin/upgrade` `{tag}` → `{accepted, logId}`；`GET /api/admin/upgrade/status` → `{running,status,log,currentVersion}`。
+`PUT /api/admin/settings` 新增 `update:{force,minVersion,autoUpgrade}`。
+
+### 14.6 集成与测试
+- `GET /api/integrations/weather?city=宣城` → 天气 JSON（缓存 10 分钟）
+- `GET /api/integrations/hotboard?type=weibo` → 热榜 JSON（缓存 5 分钟）
+- `POST /api/config/test-tts` `{text}` → `{ok,url,mime,bytes}`
+- `POST /api/config/test-stt`（multipart `file`）→ `{ok,text,model}`
+- 邮件改为品牌化 HTML 模板（验证码、分享请求、分享到期）。
+
+### 14.7 更新策略
+`GET /api/version/latest` 的 `forceUpdate` 逻辑不变；v1.2.0 发布时为需要更新的版本。仓库文档与客户端文案统一使用“需要更新/版本更新”。

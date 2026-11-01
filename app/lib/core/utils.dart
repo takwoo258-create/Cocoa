@@ -95,3 +95,23 @@ String shortText(String input, int max) {
   if (flat.length <= max) return flat;
   return '${flat.substring(0, max)}…';
 }
+
+/// v1.2.0：把更新日志以 + / - / ± 开头的行转换为 新增 / 删除 / 修改。
+String formatUpdateNotes(String notes) {
+  if (notes.trim().isEmpty) return notes;
+  final List<String> out = <String>[];
+  for (final String raw in notes.split('\n')) {
+    final String line = raw.trimRight();
+    final String trimmed = line.trimLeft();
+    if (trimmed.startsWith('±')) {
+      out.add('修改 ${trimmed.substring(1).trim()}');
+    } else if (trimmed.startsWith('+')) {
+      out.add('新增 ${trimmed.substring(1).trim()}');
+    } else if (trimmed.startsWith('-')) {
+      out.add('删除 ${trimmed.substring(1).trim()}');
+    } else {
+      out.add(line);
+    }
+  }
+  return out.join('\n');
+}

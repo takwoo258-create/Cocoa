@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import env from '../env.js';
 import logger from '../core/logger.js';
+import { runMigrations } from './migrations.js';
 
 const schemaPath = path.join(import.meta.dirname, 'schema.sql');
 
@@ -12,6 +13,7 @@ db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA busy_timeout = 8000;');
 db.exec('PRAGMA synchronous = NORMAL;');
 db.exec(fs.readFileSync(schemaPath, 'utf8'));
+runMigrations(db);
 
 const stmtCache = new Map();
 function stmt(sql) {

@@ -487,15 +487,22 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _wakeUp() async {
     final AppState state = AppScope.read(context);
     try {
-      final int wakeup = await state.chatService.wake(widget.character.id);
-      if (wakeup == 1) {
-        showToast('已经去叫ta了，等等看…');
+      final WakeResult result =
+          await state.chatService.wake(widget.character.id);
+      if (!mounted) return;
+      setState(() {
+        if (result.state != null) _state = result.state!;
+      });
+      if (result.reply.trim().isNotEmpty) {
+        _appendMessage(ChatMessage(
+          id: 'wake_${DateTime.now().microsecondsSinceEpoch}',
+          role: 'agent',
+          content: result.reply,
+          createdAt: DateTime.now().toUtc().toIso8601String(),
+        ));
       } else {
-        showToast('ta还在睡，暂时没有回应');
+        showToast('叫醒成功');
       }
-      final CharacterState latest =
-          await state.characterService.getState(widget.character.id);
-      if (mounted) setState(() => _state = latest);
     } catch (e) {
       showToast('叫醒失败：$e', isError: true);
     }

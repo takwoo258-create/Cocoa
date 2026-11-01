@@ -77,6 +77,25 @@ class ConfigService {
     return null;
   }
 
+  /// v1.2.0：TTS 测试（返回音频 URL）。
+  Future<Map<String, dynamic>> testTts(String text) async {
+    return asMap(await api.post(
+      '/config/test-tts',
+      body: <String, dynamic>{'text': text},
+      silent: true,
+    ));
+  }
+
+  /// v1.2.0：STT 测试（multipart file）。
+  Future<Map<String, dynamic>> testStt(String filePath) async {
+    return asMap(await api.upload(
+      '/config/test-stt',
+      filePath: filePath,
+      field: 'file',
+      silent: true,
+    ));
+  }
+
   Future<Map<String, dynamic>> health() async {
     return asMap(await api.get('/health', silent: true));
   }

@@ -52,7 +52,7 @@ export const env = {
   vaultDir: path.join(DATA_DIR, 'vault'),
   mediaDir: path.join(DATA_DIR, 'media'),
   logDir: path.join(DATA_DIR, 'logs'),
-  tokenTtlSec: Number(process.env.COCOA_TOKEN_TTL || 60 * 60 * 24 * 30),
+  tokenTtlSec: Number(process.env.COCOA_TOKEN_TTL || 60 * 60 * 24 * 3), // 3 天；客户端每日打开可续期至最多 4 天
   allowRegister: process.env.COCOA_ALLOW_REGISTER !== '0',
   bootstrapAdminEmail: process.env.COCOA_ADMIN_EMAIL || '',
   bootstrapAdminPassword: process.env.COCOA_ADMIN_PASSWORD || '',

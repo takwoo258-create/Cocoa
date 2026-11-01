@@ -106,6 +106,13 @@ export function overviewFor(userId, { characterId = null } = {}) {
   ).n;
   const bookCount = get(`SELECT COUNT(*) AS n FROM books WHERE user_id = ?${charFilter}`, ...params).n;
 
+  // v1.2.0：模型调用次数（usage_records 行数）与按模型分布
+  const calls = get(`SELECT COUNT(*) AS n FROM usage_records WHERE user_id = ?${charFilter}`, ...params).n;
+  const callsByModel = all(
+    `SELECT model, COUNT(*) AS calls FROM usage_records WHERE user_id = ?${charFilter} GROUP BY model ORDER BY calls DESC`,
+    ...params,
+  ).map((row) => ({ model: row.model || 'unknown', calls: row.calls }));
+
   const statusRows = all(
     `SELECT meta FROM messages WHERE user_id = ?${charFilter} AND kind = 'status' AND meta IS NOT NULL ORDER BY created_at DESC LIMIT ${STATUS_SCAN_LIMIT}`,
     ...params,
@@ -146,6 +153,8 @@ export function overviewFor(userId, { characterId = null } = {}) {
     characters,
     chatCount,
     bookCount,
+    calls,
+    callsByModel,
     healthAbnormal,
     moodAbnormal,
     statusScanned: statusRows.length,

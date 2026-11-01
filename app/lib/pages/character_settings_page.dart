@@ -4,6 +4,7 @@ import '../core/layout.dart';
 import '../core/api_client.dart';
 import '../core/app_state.dart';
 import '../core/global.dart';
+import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../models/character.dart';
 import '../widgets/common.dart';
@@ -23,6 +24,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
   bool _loading = true;
   bool _saving = false;
   final TextEditingController _tagCtrl = TextEditingController();
+  final TextEditingController _userAddress = TextEditingController();
 
   static const List<String> _freqLabels = <String>['off', 'hourly', 'daily', 'weekly'];
   static const Map<String, String> _freqText = <String, String>{
@@ -36,12 +38,14 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
   void initState() {
     super.initState();
     _settings = widget.character.settings;
+    _userAddress.text = _settings.userAddress;
     _load();
   }
 
   @override
   void dispose() {
     _tagCtrl.dispose();
+    _userAddress.dispose();
     super.dispose();
   }
 
@@ -50,7 +54,12 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
     try {
       final CharacterSettings s = await state.characterService
           .getSettings(widget.character.id);
-      if (mounted) setState(() => _settings = s);
+      if (mounted) {
+        setState(() {
+          _settings = s;
+          _userAddress.text = s.userAddress;
+        });
+      }
     } catch (_) {
       // 用列表里的缓存值兜底
     } finally {
@@ -58,7 +67,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
     }
   }
 
-  Future<void> _save() async {
+  Future<void> _save({bool confirmReplace = false}) async {
     final AppState state = AppScope.read(context);
     setState(() => _saving = true);
     try {
@@ -68,22 +77,80 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
           'rss': _settings.rss.map((RssFeed f) => f.toJson()).toList(),
           'creationTags': _settings.creationTags,
           'creationFrequency': _settings.creationFrequency,
-          'sleep': _settings.sleep.toJson(),
           'statusIntervalMin': _settings.statusIntervalMin,
           'activeReply': _settings.activeReply,
           'timezone': _settings.timezone,
           'qzoneEnabled': _settings.qzoneEnabled,
+          'userAddress': _userAddress.text.trim(),
+          'qqEnabled': _settings.qqEnabled,
+          if (confirmReplace) 'confirmReplace': true,
         },
       );
       if (!mounted) return;
-      setState(() => _settings = saved);
-      showToast('角色设置已保存');
+      setState(() {
+        _settings = saved;
+        _userAddress.text = saved.userAddress;
+      });
+      showToast(confirmReplace ? 'QQ 接入角色已更换' : '角色设置已保存');
     } on ApiException catch (e) {
+      if (e.code == 'qq_binding_conflict') {
+        if (mounted) setState(() => _saving = false);
+        await _handleBindingConflict(e);
+        return;
+      }
       showToast(e.message, isError: true);
     } catch (e) {
       showToast('保存失败：$e', isError: true);
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _handleBindingConflict(ApiException e) async {
+    final Map<String, dynamic> detail = asMap(e.detail);
+    final Map<String, dynamic> current = asMap(detail['current']);
+    final Map<String, dynamic> next = asMap(detail['next']);
+    final String currentName = asString(current['name'], '原角色');
+    final String nextName = asString(next['name'], widget.character.name);
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('是否更换接入对象？'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text(
+              'QQ 当前已接入另一位角色。确认后将切换为当前角色，原角色会自动关闭接入。',
+              style: TextStyle(fontSize: 11.5, color: AppColors.inkSoft, height: 1.5),
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: Text(
+                '$currentName >>>> $nextName',
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.cocoa,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('确认更换'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _save(confirmReplace: true);
     }
   }
 
@@ -139,48 +206,6 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
     nameCtrl.dispose();
   }
 
-  Future<void> _pickTime(String current, ValueChanged<String> onPicked) async {
-    final List<String> parts = current.split(':');
-    final TimeOfDay initial = TimeOfDay(
-      hour: int.tryParse(parts.isNotEmpty ? parts[0] : '0') ?? 0,
-      minute: int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0,
-    );
-    final TimeOfDay? picked = await showTimePicker(
-      context: context,
-      initialTime: initial,
-      helpText: '选择时间',
-    );
-    if (picked == null) return;
-    final String v =
-        '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
-    setState(() => onPicked(v));
-  }
-
-  Widget _timeRow(String label, String value, ValueChanged<String> onPicked) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: <Widget>[
-          SizedBox(
-            width: 76,
-            child: Text(
-              label,
-              style: const TextStyle(fontSize: 12.5, color: AppColors.inkSoft),
-            ),
-          ),
-          OutlinedButton(
-            onPressed: () => _pickTime(value, onPicked),
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(0, 36),
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-            ),
-            child: Text(value, style: const TextStyle(fontSize: 13)),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _bubble(String label, bool value, ValueChanged<bool> onChanged) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -206,7 +231,6 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
         body: const LoadingView(),
       );
     }
-    final SleepSchedule sleep = _settings.sleep;
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.character.name} · 角色设置'),
@@ -294,6 +318,32 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
             ),
           ),
           SectionCard(
+            title: '称呼与 QQ',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                TextField(
+                  controller: _userAddress,
+                  decoration: const InputDecoration(
+                    labelText: '对我的称呼',
+                    hintText: '留空则使用昵称',
+                    helperText: '角色会用这个称呼称呼你',
+                  ),
+                ),
+                const SizedBox(height: 6),
+                _bubble('接入 QQ', _settings.qqEnabled, (bool v) {
+                  setState(() {
+                    _settings = _settings.copyWith(qqEnabled: v);
+                  });
+                }),
+                const Text(
+                  '全账号仅一位角色可接入 QQ；若已有其他角色接入，保存时会询问是否更换接入对象。',
+                  style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                ),
+              ],
+            ),
+          ),
+          SectionCard(
             title: '创作标签',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -374,42 +424,6 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
                   }),
                 );
               }).toList(),
-            ),
-          ),
-          SectionCard(
-            title: '作息规划',
-            child: Column(
-              children: <Widget>[
-                _bubble('启用作息', sleep.enabled, (bool v) {
-                  setState(() {
-                    _settings = _settings.copyWith(
-                      sleep: sleep.copyWith(enabled: v),
-                    );
-                  });
-                }),
-                const Divider(height: 10),
-                _timeRow('入睡', sleep.start, (String v) {
-                  _settings = _settings.copyWith(sleep: sleep.copyWith(start: v));
-                }),
-                _timeRow('起床', sleep.end, (String v) {
-                  _settings = _settings.copyWith(sleep: sleep.copyWith(end: v));
-                }),
-                _timeRow('午睡开始', sleep.napStart, (String v) {
-                  _settings = _settings.copyWith(
-                    sleep: sleep.copyWith(napStart: v),
-                  );
-                }),
-                _timeRow('午睡结束', sleep.napEnd, (String v) {
-                  _settings = _settings.copyWith(
-                    sleep: sleep.copyWith(napEnd: v),
-                  );
-                }),
-                const SizedBox(height: 4),
-                const Text(
-                  '角色休息时不会回复消息，凌晨提示「夜深了…」，午睡提示「在休息哦…」。',
-                  style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
-                ),
-              ],
             ),
           ),
           SectionCard(

@@ -32,7 +32,7 @@ lib/
   记忆点恒白色、亮度 = weight，关联为虚线；点击节点展开/折叠，点击记忆点弹出详情面板。
 - **媒体**：图片 `image_picker`、语音 `record` → `POST /api/media`（multipart，字段 `file`）→
   发送消息时携带字符串 `mediaId`；播放走 `just_audio` 并带 Authorization 头。
-- **服务地址**：默认 `http://120.26.204.70:8787`，可在登录页/设置页修改并做健康检查。
+- **服务地址**：默认 `https://120-26-204-70.sslip.io`，可在登录页/设置页修改并做健康检查。
 
 ## v1.0.1 增量
 
@@ -58,10 +58,24 @@ lib/
   平板允许竖屏 + 左右横屏；Manifest 不写 `screenOrientation`。
 - 宽屏：主页使用 `NavigationRail`；内容限宽居中（聊天 900、设置/统计/书架/记忆 760、管理端 1100）；
   角色列表 2-3 列网格；统计图表两列；记忆详情左右分栏；登录卡片 480；配置对话框 560。
-- 强制更新：解析 `forceUpdate/forceReason/minVersion`；强制更新对话框 `barrierDismissible:false` +
-  `PopScope(canPop:false)`，无忽略按钮；忽略版本仅对非强制更新生效；关于页展示强制原因与最低版本。
-- 管理端「配置」页新增「应用更新」：强制更新开关 + 最低版本，读写 `/api/admin/settings` 的 `update`。
+- 需要更新：解析 `forceUpdate/forceReason/minVersion`；需要更新的对话框 `barrierDismissible:false` +
+  `PopScope(canPop:false)`，无忽略按钮；忽略版本仅对非需要更新的版本生效；关于页展示原因与最低版本。
+- 管理端「配置」页新增「应用更新」：需要更新开关 + 最低版本，读写 `/api/admin/settings` 的 `update`。
 - 版本 1.1.0+3。
+
+## v1.2.0 增量
+
+- 模型上下文：模型列表每行可编辑 `contextLimits`（含覆盖/清除），选中模型时也可设置；显示生效值与来源。
+- 用户代号/昵称：展示 `#code`，界面“用户名”统一为“昵称”（注册/登录不变）。
+- 角色：新增“对我的称呼”（settings.userAddress）与“接入 QQ”开关；409 qq_binding_conflict 时确认“原对象 >>>> 新对象”后重试；角色页展示机器人 QQ。
+- 模型分享：设置「模型分享」页（我的分享/收到的分享/待处理），支持新建分享/索要、时长（年月周天时分）/截止时间（UTC+8，精确到秒）/永久、接受/拒绝/撤销、启动 pending 弹窗与 WS 到期提示；服务配置展示 shared 来源。
+- 登录：记住账号/密码（secure storage），密码占位点、点击眼睛清除后重新输入，清除前确认。
+- 思考内容：消息 meta.thinking 折叠面板；正文与思考分离。
+- 状态：手动刷新（5 分钟冷却与 429 倒计时）、叫醒展示回复。
+- 统计：调用次数卡片与按模型调用次数。
+- 管理端：服务器状态（5 秒刷新）、后端升级（版本 notes、选择版本、进度/日志、自动升级）、update.autoUpgrade。
+- 服务地址先测试连接再保存；TTS/STT 测试；更新日志 + / - / ± 统一转换为新增/删除/修改。
+- 默认服务地址改为 HTTPS；版本 1.2.0+4。
 
 ## 构建
 

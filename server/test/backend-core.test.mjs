@@ -716,6 +716,21 @@ test('管理端：非管理员 403，管理员概览/用户/用量/会话/日志
   assert.ok(!JSON.stringify(obStatus.body).includes('obtoken-secret'));
 });
 
+test('状态刷新：失败后进入 5 分钟冷却（429 status_cooldown）', async () => {
+  const first = await api(`/api/characters/${charA.id}/status/refresh`, { method: 'POST', token: alice.token });
+  assert.ok([200, 502].includes(first.status), `首次刷新应成功或模型失败，实际 ${first.status}`);
+
+  const second = await api(`/api/characters/${charA.id}/status/refresh`, { method: 'POST', token: alice.token });
+  assert.equal(second.status, 429);
+  assert.equal(second.body.error.code, 'status_cooldown');
+  assert.ok(second.body.error.detail.retryAfterSec > 0);
+  assert.ok(second.body.error.detail.nextAllowedAt);
+
+  const outsider = makeUser({ username: `outsider_${Date.now()}` });
+  const alien = await api(`/api/characters/${charA.id}/status/refresh`, { method: 'POST', token: outsider.token });
+  assert.equal(alien.status, 404);
+});
+
 test('删除角色级联清理全部资产', async () => {
   const del = await api(`/api/characters/${charA.id}`, { method: 'DELETE', token: alice.token });
   assert.equal(del.status, 200);

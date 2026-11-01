@@ -1,5 +1,6 @@
 import '../core/api_client.dart';
 import '../core/json_utils.dart';
+import '../models/character.dart';
 import '../models/chat_message.dart';
 
 class ChatService {
@@ -48,10 +49,16 @@ class ChatService {
     return asMap(await api.post('/characters/$characterId/active-reply'));
   }
 
-  /// 叫醒：返回 wakeup=1 表示模型接受并会生成回复。
-  Future<int> wake(String characterId) async {
+  /// v1.2.0：叫醒会解除睡眠并生成一次回复。
+  Future<WakeResult> wake(String characterId) async {
     final dynamic r = await api.post('/characters/$characterId/wake');
-    return asInt(asMap(r)['wakeup']);
+    return WakeResult.fromJson(asMap(r));
+  }
+
+  /// v1.2.0：立即刷新状态（5 分钟冷却，429 status_cooldown）。
+  Future<StatusRefreshResult> refreshStatus(String characterId) async {
+    final dynamic r = await api.post('/characters/$characterId/status/refresh');
+    return StatusRefreshResult.fromJson(asMap(r));
   }
 
   Future<ContextUsage> context(String characterId) async {

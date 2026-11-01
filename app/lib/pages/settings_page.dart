@@ -12,6 +12,7 @@ import 'settings/limits_page.dart';
 import 'settings/model_routing_page.dart';
 import 'settings/profile_page.dart';
 import 'settings/service_config_page.dart';
+import 'settings/shares_page.dart';
 
 /// v1.0.1：设置首页改为分组二级菜单。
 class SettingsPage extends StatelessWidget {
@@ -127,8 +128,8 @@ class SettingsPage extends StatelessWidget {
                 ),
                 child: Center(
                   child: Text(
-                    (state.user?.username.isNotEmpty ?? false)
-                        ? state.user!.username.characters.first
+                    (state.user?.displayName.isNotEmpty ?? false)
+                        ? state.user!.displayName.characters.first
                         : '?',
                     style: const TextStyle(
                       color: Colors.white,
@@ -144,7 +145,7 @@ class SettingsPage extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      state.user?.username ?? '',
+                      '${state.user?.codeLabel ?? ''} ${state.user?.displayName ?? ''}'.trim(),
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 15,
@@ -186,7 +187,7 @@ class SettingsPage extends StatelessWidget {
             context,
             icon: Icons.person_outline,
             title: '个人信息',
-            subtitle: '用户名 / 邮箱 / QQ / 密码',
+            subtitle: '昵称 / 邮箱 / QQ / 密码',
             page: const ProfilePage(),
           ),
           _tile(
@@ -205,6 +206,13 @@ class SettingsPage extends StatelessWidget {
             subtitle: '对话 / 嵌入 / DeepSeek / STT / TTS',
             trailingText: state.chatReady ? '已配置' : '未配置',
             page: const ServiceConfigPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.swap_horiz,
+            title: '模型分享',
+            subtitle: '分享 / 索要模型，设置时长或截止时间',
+            page: const SharesPage(),
           ),
           _tile(
             context,

@@ -18,6 +18,9 @@ export const DEFAULT_CHARACTER_SETTINGS = {
   statusIntervalMin: 10,
   activeReply: true,
   qzoneEnabled: false,
+  // v1.2.0：角色对用户的称呼（空则用用户昵称）、是否接入 QQ（全账号仅一个角色可为 true）
+  userAddress: '',
+  qqEnabled: false,
   timezone: 'Asia/Shanghai',
   modelRouting: {},
   searchProvider: 'deepseek',
@@ -135,6 +138,8 @@ export function shapeCharacter(row, userId) {
   const c = decryptRow(row);
   const state = ensureState(row.id, userId);
   const settings = getSettings(row.id, userId);
+  // v1.2.0：QQ 接入以 characters.qq_enabled 列为准（全账号唯一）
+  settings.qqEnabled = Boolean(row.qq_enabled);
   const companionDays = state.companion_since
     ? Math.max(1, Math.floor((Date.now() - new Date(state.companion_since).getTime()) / 86400000) + 1)
     : 0;
@@ -151,6 +156,7 @@ export function shapeCharacter(row, userId) {
     appearance: c.appearance,
     occupation: c.occupation,
     avatar: c.avatar || null,
+    qqEnabled: Boolean(row.qq_enabled),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archived: Boolean(row.archived),

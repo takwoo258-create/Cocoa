@@ -20,17 +20,20 @@ function pickOverrides(body) {
   return Object.keys(out).length ? out : null;
 }
 
-function maskApi(cfg) {
+function maskApi(cfg, sharedMeta = {}) {
   const out = {};
   for (const svc of SERVICES) {
     const c = cfg[svc] || {};
+    const shared = sharedMeta[svc] || null;
     out[svc] = {
       baseUrl: c.baseUrl || '',
       model: c.model || '',
       voice: c.voice || '',
       apiKeySet: Boolean(c.apiKey),
-      apiKeyMasked: c.apiKey ? `${c.apiKey.slice(0, 4)}****${c.apiKey.slice(-4)}` : '',
+      // 分享来的配置不暴露任何密钥片段
+      apiKeyMasked: shared ? '****' : c.apiKey ? `${c.apiKey.slice(0, 4)}****${c.apiKey.slice(-4)}` : '',
       extra: c.extra || {},
+      shared,
     };
   }
   return out;
@@ -67,8 +70,9 @@ export default function register() {
   r.get('/', (req, res) => {
     const cfg = getUserApi(req.userId);
     const prefs = getPrefs(req.userId);
+    const shared = cfg.shared || {};
     res.json({
-      api: maskApi(cfg),
+      api: maskApi(cfg, shared),
       preferences: prefs,
       ready: {
         chat: Boolean(cfg.chat.apiKey),
@@ -77,6 +81,8 @@ export default function register() {
         tts: Boolean(cfg.tts.apiKey),
         search: Boolean(cfg.search.apiKey), // 兼容字段：search/fetch 复用 deepseek，不再暴露配置项
       },
+      // v1.2.0：他人分享且生效中的服务元信息（不含密钥）
+      shared,
       defaults: { preferences: DEFAULT_PREFS, services: SERVICES, note: 'search/fetch 复用 DeepSeek 配置，无需单独设置模型' },
     });
   });
@@ -87,7 +93,13 @@ export default function register() {
       const patch = sanitizePatch(req.body || {});
       if (!Object.keys(patch).length) throw badRequest('没有可保存的配置项', 'empty_patch');
       const cfg = saveUserApi(req.userId, patch);
-      res.json({ ok: true, api: maskApi(cfg), ready: { chat: Boolean(cfg.chat.apiKey), embedding: Boolean(cfg.embedding.apiKey) } });
+      const shared = cfg.shared || {};
+      res.json({
+        ok: true,
+        api: maskApi(cfg, shared),
+        ready: { chat: Boolean(cfg.chat.apiKey), embedding: Boolean(cfg.embedding.apiKey) },
+        shared,
+      });
     }),
   );
 

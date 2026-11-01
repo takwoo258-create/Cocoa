@@ -74,6 +74,7 @@ class AppConfig {
     this.readyStt = false,
     this.readyTts = false,
     this.readySearch = false,
+    this.shared = const <String, dynamic>{},
     this.raw = const <String, dynamic>{},
   });
 
@@ -84,6 +85,9 @@ class AppConfig {
   final bool readyStt;
   final bool readyTts;
   final bool readySearch;
+
+  /// v1.2.0：他人分享的可用服务 {chat:{shareId,ownerCode,...,expiresAt,model}}。
+  final Map<String, dynamic> shared;
   final Map<String, dynamic> raw;
 
   ServiceConfig service(String name) => services[name] ?? ServiceConfig.empty;
@@ -124,6 +128,7 @@ class AppConfig {
       readyStt: asBool(ready['stt']),
       readyTts: asBool(ready['tts']),
       readySearch: asBool(ready['search']),
+      shared: asMap(j['shared']),
       raw: j,
     );
   }

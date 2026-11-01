@@ -138,6 +138,8 @@ class CharacterSettings {
     this.searchProvider = 'deepseek',
     this.diaryHintEnabled = true,
     this.qzoneEnabled = false,
+    this.userAddress = '',
+    this.qqEnabled = false,
   });
 
   final List<RssFeed> rss;
@@ -154,6 +156,12 @@ class CharacterSettings {
   /// 是否允许角色主动发 QQ 空间动态（v1.0.1）。
   final bool qzoneEnabled;
 
+  /// v1.2.0：角色对用户的称呼，空则使用用户昵称。
+  final String userAddress;
+
+  /// v1.2.0：该角色是否接入 QQ（全账号仅一个角色可开启）。
+  final bool qqEnabled;
+
   static const CharacterSettings defaults = CharacterSettings();
 
   factory CharacterSettings.fromJson(Map<String, dynamic> j) =>
@@ -169,6 +177,8 @@ class CharacterSettings {
         searchProvider: asString(j['searchProvider'], 'deepseek'),
         diaryHintEnabled: asBool(j['diaryHintEnabled'], true),
         qzoneEnabled: asBool(j['qzoneEnabled']),
+        userAddress: asString(j['userAddress']),
+        qqEnabled: asBool(j['qqEnabled']),
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -183,6 +193,8 @@ class CharacterSettings {
         'searchProvider': searchProvider,
         'diaryHintEnabled': diaryHintEnabled,
         'qzoneEnabled': qzoneEnabled,
+        'userAddress': userAddress,
+        'qqEnabled': qqEnabled,
       };
 
   CharacterSettings copyWith({
@@ -197,6 +209,8 @@ class CharacterSettings {
     String? searchProvider,
     bool? diaryHintEnabled,
     bool? qzoneEnabled,
+    String? userAddress,
+    bool? qqEnabled,
   }) =>
       CharacterSettings(
         rss: rss ?? this.rss,
@@ -210,6 +224,8 @@ class CharacterSettings {
         searchProvider: searchProvider ?? this.searchProvider,
         diaryHintEnabled: diaryHintEnabled ?? this.diaryHintEnabled,
         qzoneEnabled: qzoneEnabled ?? this.qzoneEnabled,
+        userAddress: userAddress ?? this.userAddress,
+        qqEnabled: qqEnabled ?? this.qqEnabled,
       );
 }
 
@@ -425,5 +441,41 @@ class RssFeed {
         name: name ?? this.name,
         url: url ?? this.url,
         enabled: enabled ?? this.enabled,
+      );
+}
+
+
+/// v1.2.0：叫醒结果。
+class WakeResult {
+  const WakeResult({
+    this.ok = false,
+    this.state,
+    this.reply = '',
+  });
+
+  final bool ok;
+  final CharacterState? state;
+  final String reply;
+
+  factory WakeResult.fromJson(Map<String, dynamic> j) => WakeResult(
+        ok: asBool(j['ok']),
+        state: j['state'] is Map ? CharacterState.fromJson(asMap(j['state'])) : null,
+        reply: asString(j['reply']),
+      );
+}
+
+/// v1.2.0：状态刷新结果。
+class StatusRefreshResult {
+  const StatusRefreshResult({
+    this.state,
+    this.nextAllowedAt = '',
+  });
+
+  final CharacterState? state;
+  final String nextAllowedAt;
+
+  factory StatusRefreshResult.fromJson(Map<String, dynamic> j) => StatusRefreshResult(
+        state: j['state'] is Map ? CharacterState.fromJson(asMap(j['state'])) : null,
+        nextAllowedAt: asString(j['nextAllowedAt']),
       );
 }

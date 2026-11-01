@@ -5,7 +5,7 @@ import '../core/native.dart';
 import '../core/theme.dart';
 import '../models/version_info.dart';
 
-/// v1.1.0：强制更新对话框（不可关闭、无忽略按钮）。
+/// v1.1.0：需要更新的对话框（不可关闭、无忽略按钮）。
 class ForceUpdateDialog {
   static bool _showing = false;
 
@@ -20,7 +20,7 @@ class ForceUpdateDialog {
     final String reasonText = switch (reason) {
       'admin' => '管理员已将该版本设为必须更新',
       'min_version' => '当前版本低于最低支持版本${minVersion.isEmpty ? '' : ' $minVersion'}',
-      'release' => '该版本说明要求强制更新',
+      'release' => '该版本说明要求更新',
       _ => '当前版本已不再受支持',
     };
     try {
@@ -64,7 +64,7 @@ class ForceUpdateDialog {
                         height: 1.5,
                       ),
                     ),
-                    if (latest.notesSummary.isNotEmpty) ...<Widget>[
+                    if (latest.formattedNotes.isNotEmpty) ...<Widget>[
                       const SizedBox(height: 10),
                       const Text(
                         '更新内容',
@@ -75,7 +75,9 @@ class ForceUpdateDialog {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        latest.notesSummary,
+                        latest.formattedNotes,
+                        maxLines: 8,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontSize: 11.5,
                           height: 1.55,

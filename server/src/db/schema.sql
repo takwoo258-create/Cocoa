@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_salt TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'user',
   qq            TEXT UNIQUE,
+  code          INTEGER,
   email_verified INTEGER NOT NULL DEFAULT 0,
   status        TEXT NOT NULL DEFAULT 'active',
   created_at    TEXT NOT NULL,
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   user_id    TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
+  last_renew_at TEXT,
   user_agent TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
@@ -102,6 +104,7 @@ CREATE TABLE IF NOT EXISTS character_state (
   last_portrait_at TEXT,
   intimacy     REAL NOT NULL DEFAULT 0,
   companion_since TEXT,
+  last_manual_refresh_at TEXT,
   updated_at   TEXT
 );
 
@@ -284,5 +287,36 @@ CREATE TABLE IF NOT EXISTS onebot_messages (
   qq         TEXT,
   direction  TEXT NOT NULL,
   content    TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_shares (
+  id           TEXT PRIMARY KEY,
+  owner_id     TEXT NOT NULL,
+  target_id    TEXT NOT NULL,
+  direction    TEXT NOT NULL,
+  services     TEXT NOT NULL,
+  payload      TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  permanent    INTEGER NOT NULL DEFAULT 0,
+  duration     TEXT,
+  expires_at   TEXT,
+  note         TEXT,
+  seen         INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL,
+  responded_at TEXT,
+  revoked_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_shares_target ON model_shares(target_id, status);
+CREATE INDEX IF NOT EXISTS idx_shares_owner ON model_shares(owner_id, status);
+CREATE INDEX IF NOT EXISTS idx_shares_expire ON model_shares(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS upgrade_logs (
+  id         TEXT PRIMARY KEY,
+  actor_id   TEXT,
+  from_version TEXT,
+  to_version TEXT,
+  status     TEXT NOT NULL,
+  detail     TEXT,
   created_at TEXT NOT NULL
 );

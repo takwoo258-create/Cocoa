@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/api_client.dart';
 import '../core/app_state.dart';
 import '../core/global.dart';
+import '../core/json_utils.dart';
 import '../core/layout.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
@@ -26,6 +27,8 @@ class CharacterListPageState extends State<CharacterListPage> {
   List<Character> _characters = <Character>[];
   bool _loading = true;
   String? _error;
+  String _botQQ = '';
+  bool _botConnected = false;
 
   @override
   void initState() {
@@ -56,12 +59,34 @@ class CharacterListPageState extends State<CharacterListPage> {
           await state.setActiveCharacter(list.first.id);
         }
       }
+      await _loadOnebotStatus(state);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadOnebotStatus(AppState state) async {
+    try {
+      final Map<String, dynamic> status = await state.socialService.onebotStatus();
+      if (!mounted) return;
+      setState(() {
+        _botQQ = asString(status['selfId']);
+        final bool online = status.containsKey('connected')
+            ? asBool(status['connected'])
+            : asBool(status['online'], true);
+        _botConnected = _botQQ.isNotEmpty && online;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _botQQ = '';
+          _botConnected = false;
+        });
+      }
     }
   }
 
@@ -210,9 +235,42 @@ class CharacterListPageState extends State<CharacterListPage> {
     }
     final Widget header = Padding(
       padding: const EdgeInsets.only(bottom: 8, left: 2),
-      child: Text(
-        '${greeting()}，${state.user?.username ?? ''} · 共 ${_characters.length} 位角色',
-        style: const TextStyle(fontSize: 12, color: AppColors.inkSoft),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: Text(
+              '${greeting()}，${state.user?.displayName ?? ''} · 共 ${_characters.length} 位角色',
+              style: const TextStyle(fontSize: 12, color: AppColors.inkSoft),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: _botConnected
+                  ? AppColors.success.withAlpha(24)
+                  : AppColors.sand,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  Icons.smart_toy_outlined,
+                  size: 12,
+                  color: _botConnected ? AppColors.success : AppColors.inkSoft,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _botConnected && _botQQ.isNotEmpty ? 'QQ $_botQQ' : '未连接',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: _botConnected ? AppColors.success : AppColors.inkSoft,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
     final int cols = responsiveColumns(context);

@@ -120,4 +120,43 @@ class StorageService {
       await p.setString(_kIgnoredVersionTag, tag);
     }
   }
+
+  Future<String?> readRememberedIdentifier() async {
+    final SharedPreferences p = await _prefs;
+    return p.getString('cocoa.rememberIdentifier');
+  }
+
+  Future<void> writeRememberedIdentifier(String? value) async {
+    final SharedPreferences p = await _prefs;
+    if (value == null || value.isEmpty) {
+      await p.remove('cocoa.rememberIdentifier');
+    } else {
+      await p.setString('cocoa.rememberIdentifier', value);
+    }
+  }
+
+  Future<String?> readRememberedPassword() async {
+    try {
+      return await _secure.read(key: 'cocoa.rememberPassword');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> writeRememberedPassword(String? value) async {
+    try {
+      if (value == null || value.isEmpty) {
+        await _secure.delete(key: 'cocoa.rememberPassword');
+      } else {
+        await _secure.write(key: 'cocoa.rememberPassword', value: value);
+      }
+    } catch (_) {
+      // secure storage 不可用时忽略
+    }
+  }
+
+  Future<void> clearRememberedLogin() async {
+    await writeRememberedIdentifier(null);
+    await writeRememberedPassword(null);
+  }
 }

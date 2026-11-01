@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -69,17 +71,29 @@ class _AdminPageState extends State<AdminPage>
   bool _settingsLoaded = false;
   bool _savingSettings = false;
   Map<String, dynamic> _onebotStatus = <String, dynamic>{};
+  Map<String, dynamic> _serverStatus = <String, dynamic>{};
+  bool _loadingServer = false;
+  Timer? _serverTimer;
+  List<Map<String, dynamic>> _upgradeVersions = <Map<String, dynamic>>[];
+  bool _loadingVersions = false;
+  Map<String, dynamic> _upgradeStatus = <String, dynamic>{};
+  Timer? _upgradeTimer;
+  bool _autoUpgrade = false;
+  bool _updateAutoUpgrade = false;
+  String? _upgradingTag;
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 7, vsync: this);
+    _tab = TabController(length: 9, vsync: this);
     _tab.addListener(_onTabChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadOverview());
   }
 
   @override
   void dispose() {
+    _serverTimer?.cancel();
+    _upgradeTimer?.cancel();
     _tab.removeListener(_onTabChanged);
     _tab.dispose();
     for (final TextEditingController c in <TextEditingController>[
@@ -103,6 +117,26 @@ class _AdminPageState extends State<AdminPage>
   void _onTabChanged() {
     if (_tab.indexIsChanging) return;
     final int i = _tab.index;
+    if (i == 7) {
+      _startServerTimer();
+      if (!_loadedTabs.contains(7)) {
+        _loadedTabs.add(7);
+        _loadServerStatus();
+      }
+    } else {
+      _serverTimer?.cancel();
+      _serverTimer = null;
+    }
+    if (i == 8) {
+      _startUpgradePolling();
+      if (!_loadedTabs.contains(8)) {
+        _loadedTabs.add(8);
+        _loadUpgradeData();
+      }
+    } else {
+      _upgradeTimer?.cancel();
+      _upgradeTimer = null;
+    }
     if (_loadedTabs.contains(i)) return;
     switch (i) {
       case 1:
@@ -279,6 +313,7 @@ class _AdminPageState extends State<AdminPage>
         _obPath.text = asString(onebot['wsPath'], '/onebot/ws');
         _updateForce = asBool(update['force']);
         _updateMinVersion.text = asString(update['minVersion']);
+        _updateAutoUpgrade = asBool(update['autoUpgrade']);
         _settingsLoaded = true;
         _loadedTabs.add(5);
       });
@@ -310,6 +345,7 @@ class _AdminPageState extends State<AdminPage>
         'update': <String, dynamic>{
           'force': _updateForce,
           'minVersion': _updateMinVersion.text.trim(),
+          'autoUpgrade': _updateAutoUpgrade,
         },
       });
       _smtpPass.clear();
@@ -354,7 +390,7 @@ class _AdminPageState extends State<AdminPage>
             Padding(
               padding: const EdgeInsets.all(14),
               child: Text(
-                '${asString(user['username'])} · ${asString(user['email'])}',
+                '${asInt(user['code']) > 0 ? '#${asInt(user['code'])} ' : ''}${asString(user['nickname'], asString(user['username']))} · ${asString(user['email'])}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
@@ -752,7 +788,7 @@ class _AdminPageState extends State<AdminPage>
                 child: TextField(
                   controller: _userQuery,
                   decoration: const InputDecoration(
-                    hintText: '搜索用户名 / 邮箱 / QQ / ID',
+                    hintText: '搜索昵称 / 邮箱 / QQ / 代号 / ID',
                     isDense: true,
                     prefixIcon: Icon(Icons.search, size: 18),
                   ),
@@ -814,7 +850,7 @@ class _AdminPageState extends State<AdminPage>
                         title: Row(
                           children: <Widget>[
                             Text(
-                              asString(u['username']),
+                              '${asInt(u['code']) > 0 ? '#${asInt(u['code'])} ' : ''}${asString(u['nickname'], asString(u['username']))}',
                               style: const TextStyle(fontSize: 13),
                             ),
                             const SizedBox(width: 5),
@@ -1268,6 +1304,484 @@ class _AdminPageState extends State<AdminPage>
     );
   }
 
+  double _pct(dynamic value) {
+    final double v = asDouble(value);
+    if (v <= 1) return (v * 100).clamp(0, 100).toDouble();
+    return v.clamp(0, 100).toDouble();
+  }
+
+  String _uptimeText(dynamic seconds) {
+    int total = asInt(seconds);
+    if (total <= 0 && seconds is String) total = int.tryParse(seconds) ?? 0;
+    final int days = total ~/ 86400;
+    final int hours = (total % 86400) ~/ 3600;
+    final int minutes = (total % 3600) ~/ 60;
+    if (days > 0) return '$days 天 $hours 小时 $minutes 分';
+    if (hours > 0) return '$hours 小时 $minutes 分';
+    return '$minutes 分';
+  }
+
+  void _startServerTimer() {
+    _serverTimer?.cancel();
+    _serverTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _loadServerStatus(silent: true);
+    });
+  }
+
+  Future<void> _loadServerStatus({bool silent = false}) async {
+    final AppState state = AppScope.read(context);
+    if (!silent && mounted) setState(() => _loadingServer = true);
+    try {
+      final Map<String, dynamic> data = await state.adminService.serverStatus();
+      if (!mounted) return;
+      setState(() => _serverStatus = data);
+    } catch (_) {
+      // 定时刷新失败时静默
+    } finally {
+      if (mounted && !silent) setState(() => _loadingServer = false);
+    }
+  }
+
+  Future<void> _loadUpgradeData() async {
+    await Future.wait(<Future<void>>[
+      _loadUpgradeVersions(),
+      _loadUpgradeStatus(silent: true),
+      _loadAutoUpgrade(),
+    ]);
+  }
+
+  Future<void> _loadUpgradeVersions() async {
+    final AppState state = AppScope.read(context);
+    if (mounted) setState(() => _loadingVersions = true);
+    try {
+      final List<Map<String, dynamic>> list =
+          await state.adminService.upgradeVersions();
+      if (!mounted) return;
+      setState(() => _upgradeVersions = list);
+    } catch (e) {
+      if (mounted) showToast('版本列表加载失败：$e', isError: true);
+    } finally {
+      if (mounted) setState(() => _loadingVersions = false);
+    }
+  }
+
+  Future<void> _loadUpgradeStatus({bool silent = false}) async {
+    final AppState state = AppScope.read(context);
+    try {
+      final Map<String, dynamic> data = await state.adminService.upgradeStatus();
+      if (!mounted) return;
+      setState(() => _upgradeStatus = data);
+    } catch (_) {
+      // 升级任务进行中后端可能短暂不可用，忽略
+    }
+  }
+
+  Future<void> _loadAutoUpgrade() async {
+    final AppState state = AppScope.read(context);
+    try {
+      final Map<String, dynamic> s = await state.adminService.settings();
+      final Map<String, dynamic> update = asMap(s['update']);
+      if (!mounted) return;
+      setState(() => _autoUpgrade = asBool(update['autoUpgrade']));
+    } catch (_) {
+      // 忽略
+    }
+  }
+
+  Future<void> _saveAutoUpgrade(bool value) async {
+    final AppState state = AppScope.read(context);
+    setState(() => _autoUpgrade = value);
+    try {
+      await state.adminService.saveSettings(<String, dynamic>{
+        'update': <String, dynamic>{'autoUpgrade': value},
+      });
+      if (mounted) showToast(value ? '已开启自动升级' : '已关闭自动升级');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _autoUpgrade = !value);
+        showToast('保存失败：$e', isError: true);
+      }
+    }
+  }
+
+  void _startUpgradePolling() {
+    _upgradeTimer?.cancel();
+    _upgradeTimer = Timer.periodic(const Duration(seconds: 2), (Timer t) async {
+      await _loadUpgradeStatus(silent: true);
+      if (!mounted) return;
+      if (!asBool(_upgradeStatus['running'])) {
+        t.cancel();
+        _upgradeTimer = null;
+        if (_upgradingTag != null) {
+          setState(() => _upgradingTag = null);
+          showToast('后端升级任务已结束，请查看日志');
+          await _loadUpgradeVersions();
+        }
+      }
+    });
+  }
+
+  Future<void> _startUpgrade(String tag) async {
+    final bool ok = await confirmDialog(
+      context,
+      title: '升级后端到 $tag',
+      message: '升级期间服务可能短暂中断，确定开始升级吗？',
+      confirmText: '开始升级',
+    );
+    if (!ok) return;
+    final AppState state = AppScope.read(context);
+    setState(() => _upgradingTag = tag);
+    try {
+      final Map<String, dynamic> r = await state.adminService.startUpgrade(tag);
+      if (!mounted) return;
+      if (asBool(r['accepted'])) {
+        showToast('已开始升级：$tag');
+        _startUpgradePolling();
+      } else {
+        setState(() => _upgradingTag = null);
+        showToast('升级请求未被接受', isError: true);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _upgradingTag = null);
+        showToast('升级失败：$e', isError: true);
+      }
+    }
+  }
+
+  Widget _serverStatusTab() {
+    if (_loadingServer && _serverStatus.isEmpty) {
+      return const LoadingView(text: '服务器状态加载中…');
+    }
+    if (_serverStatus.isEmpty) {
+      return EmptyView(
+        text: '没有获取到服务器状态',
+        icon: Icons.dns_outlined,
+        action: OutlinedButton(
+          onPressed: _loadServerStatus,
+          child: const Text('重试'),
+        ),
+      );
+    }
+    final Map<String, dynamic> cpu = asMap(_serverStatus['cpu']);
+    final Map<String, dynamic> memory = asMap(_serverStatus['memory']);
+    final Map<String, dynamic> disk = asMap(_serverStatus['disk']);
+    final Map<String, dynamic> network = asMap(_serverStatus['network']);
+    final double cpuPct = _pct(cpu['percent']);
+    final double memPct = _pct(memory['percent']);
+    final double diskPct = _pct(disk['percent']);
+    return RefreshIndicator(
+      onRefresh: _loadServerStatus,
+      child: ListView(
+        padding: const EdgeInsets.only(bottom: 24),
+        children: <Widget>[
+          SectionCard(
+            title: 'CPU',
+            trailing: Text(
+              '${cpuPct.toStringAsFixed(1)}%',
+              style: const TextStyle(fontSize: 11, color: AppColors.cocoa),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                LinearProgressIndicator(
+                  value: cpuPct / 100,
+                  minHeight: 7,
+                  backgroundColor: AppColors.sand,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '核心 ${asInt(cpu['cores'])} · load ${asString(cpu['load'], '—')}',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: AppColors.inkSoft,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SectionCard(
+            title: '内存',
+            trailing: Text(
+              '${memPct.toStringAsFixed(1)}%',
+              style: const TextStyle(fontSize: 11, color: AppColors.cocoa),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                LinearProgressIndicator(
+                  value: memPct / 100,
+                  minHeight: 7,
+                  backgroundColor: AppColors.sand,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '已用 ${formatBytes(asInt(memory['used']))} / '
+                  '${formatBytes(asInt(memory['total']))} · '
+                  '可用 ${formatBytes(asInt(memory['free']))}',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: AppColors.inkSoft,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SectionCard(
+            title: '磁盘',
+            trailing: Text(
+              '${diskPct.toStringAsFixed(1)}%',
+              style: const TextStyle(fontSize: 11, color: AppColors.cocoa),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                LinearProgressIndicator(
+                  value: diskPct / 100,
+                  minHeight: 7,
+                  backgroundColor: AppColors.sand,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '已用 ${formatBytes(asInt(disk['used']))} / '
+                  '${formatBytes(asInt(disk['total']))} · '
+                  '可用 ${formatBytes(asInt(disk['free']))}',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: AppColors.inkSoft,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SectionCard(
+            title: '网络',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  '累计接收 ${formatBytes(asInt(network['rxBytes']))} · '
+                  '发送 ${formatBytes(asInt(network['txBytes']))}',
+                  style: const TextStyle(fontSize: 11.5),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '当前速率 ↓ ${formatBytes(asInt(network['rxRate']))}/s · '
+                  '↑ ${formatBytes(asInt(network['txRate']))}/s',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: AppColors.inkSoft,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SectionCard(
+            title: '运行信息',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  '运行时长：${_uptimeText(_serverStatus['uptime'])}',
+                  style: const TextStyle(fontSize: 11.5),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Node ${asString(_serverStatus['node'], '—')} · '
+                  '采样 ${asString(_serverStatus['time'])}',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: AppColors.inkSoft,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  '每 5 秒自动刷新；切到其它页签会停止刷新。',
+                  style: TextStyle(fontSize: 10, color: AppColors.inkSoft),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _upgradeVersionCard(Map<String, dynamic> v) {
+    final String tag = asString(v['tag'], asString(v['version']));
+    final String notes = formatUpdateNotes(asString(v['notes']));
+    final bool running = asBool(_upgradeStatus['running']) || _upgradingTag != null;
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.cream,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.sand),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Text(
+                asString(v['name'], tag),
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                formatDate(asString(v['publishedAt'])),
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: AppColors.inkSoft,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '标签：$tag · 资产：${asString(v['asset'], '—')}',
+            style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
+          ),
+          if (notes.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 6),
+            Text(
+              notes,
+              maxLines: 8,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11,
+                height: 1.55,
+                color: AppColors.inkSoft,
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton(
+              onPressed: running || tag.isEmpty ? null : () => _startUpgrade(tag),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(0, 34),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                textStyle: const TextStyle(fontSize: 11.5),
+              ),
+              child: Text(
+                _upgradingTag == tag ? '升级中…' : '升级到此版本',
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _upgradeTab() {
+    final bool running = asBool(_upgradeStatus['running']) || _upgradingTag != null;
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 24),
+      children: <Widget>[
+        SectionCard(
+          title: '自动升级',
+          trailing: Switch(
+            value: _autoUpgrade,
+            onChanged: _saveAutoUpgrade,
+          ),
+          child: const Text(
+            '开启后后端会在检测到新版本时按需要更新的策略自动升级；升级前会保留版本与日志。',
+            style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft, height: 1.5),
+          ),
+        ),
+        SectionCard(
+          title: '当前升级状态',
+          trailing: Text(
+            running ? '升级中' : '空闲',
+            style: TextStyle(
+              fontSize: 11,
+              color: running ? AppColors.warn : AppColors.inkSoft,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                '当前版本 ${asString(_upgradeStatus['currentVersion'], kAppVersion)} · '
+                '状态 ${asString(_upgradeStatus['status'], '—')}',
+                style: const TextStyle(fontSize: 11.5),
+              ),
+              if (asString(_upgradeStatus['log']).isNotEmpty) ...<Widget>[
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  constraints: const BoxConstraints(maxHeight: 160),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.ink.withAlpha(10),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: SingleChildScrollView(
+                    child: Text(
+                      asString(_upgradeStatus['log']),
+                      style: const TextStyle(
+                        fontSize: 10,
+                        height: 1.45,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: _loadUpgradeStatus,
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 30),
+                    textStyle: const TextStyle(fontSize: 11),
+                  ),
+                  child: const Text('刷新状态'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SectionCard(
+          title: '可用版本',
+          trailing: IconButton(
+            icon: const Icon(Icons.refresh, size: 18),
+            onPressed: _loadUpgradeVersions,
+          ),
+          child: _loadingVersions
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                )
+              : _upgradeVersions.isEmpty
+                  ? const Text(
+                      '没有获取到可升级版本（需仓库发布 Release）',
+                      style: TextStyle(fontSize: 11, color: AppColors.inkSoft),
+                    )
+                  : Column(
+                      children: _upgradeVersions
+                          .map(_upgradeVersionCard)
+                          .toList(),
+                    ),
+        ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: Text(
+            '后端升级遵循版本更新策略；升级过程会写入日志，完成后当前会话可能需要重新连接。',
+            style: TextStyle(fontSize: 10, color: AppColors.inkSoft, height: 1.5),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _settingsTab() {
     if (!_settingsLoaded) {
       return Center(
@@ -1369,11 +1883,11 @@ class _AdminPageState extends State<AdminPage>
                 contentPadding: EdgeInsets.zero,
                 dense: true,
                 title: const Text(
-                  '强制更新',
+                  '需要更新',
                   style: TextStyle(fontSize: 13),
                 ),
                 subtitle: const Text(
-                  '开启后所有低于最新版本的客户端必须更新；也可用最低版本号强制。',
+                  '开启后所有低于最新版本的客户端需要更新；也可用最低版本号限制。',
                   style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
                 ),
                 value: _updateForce,
@@ -1384,9 +1898,20 @@ class _AdminPageState extends State<AdminPage>
                 controller: _updateMinVersion,
                 decoration: const InputDecoration(
                   labelText: '最低版本',
-                  hintText: '例如 1.1.0（留空表示不限制）',
-                  helperText: '当前客户端版本低于该值时也会触发强制更新',
+                  hintText: '例如 1.2.0（留空表示不限制）',
+                  helperText: '当前客户端版本低于该值时会要求更新',
                 ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('自动升级后端', style: TextStyle(fontSize: 13)),
+                subtitle: const Text(
+                  '开启后后端在检测到新版本时自动升级（升级前展示更新内容）。',
+                  style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                ),
+                value: _updateAutoUpgrade,
+                onChanged: (bool v) => setState(() => _updateAutoUpgrade = v),
               ),
             ],
           ),
@@ -1531,6 +2056,8 @@ class _AdminPageState extends State<AdminPage>
               Tab(text: '日志'),
               Tab(text: '配置'),
               Tab(text: '存储'),
+              Tab(text: '服务器状态'),
+              Tab(text: '升级'),
             ],
           ),
           Expanded(
@@ -1546,6 +2073,8 @@ class _AdminPageState extends State<AdminPage>
                 _logsTab(),
                 _settingsTab(),
                 _storageTab(),
+                _serverStatusTab(),
+                _upgradeTab(),
               ],
             ),
           ),

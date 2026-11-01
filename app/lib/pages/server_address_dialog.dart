@@ -42,16 +42,38 @@ Future<void> showServerAddressDialog(BuildContext context) async {
 
         Future<void> save() async {
           setSt(() => busy = true);
+          // v1.2.0：只有测试连接通过才保存，失败保持原地址。
+          try {
+            final ApiClient probe = ApiClient(baseUrl: ctrl.text);
+            final dynamic r = await probe.get('/health', silent: true);
+            final bool ok = asBool(asMap(r)['ok']);
+            if (!ok) {
+              setSt(() {
+                statusOk = false;
+                status = '连接测试未通过，服务地址未修改';
+                busy = false;
+              });
+              return;
+            }
+          } catch (e) {
+            setSt(() {
+              statusOk = false;
+              status = '连接失败：$e（服务地址未修改）';
+              busy = false;
+            });
+            return;
+          }
           await state.setBaseUrl(ctrl.text);
-          final bool ok = state.loggedIn ? await state.verifySession() : true;
+          final bool sessionOk =
+              state.loggedIn ? await state.verifySession() : true;
           setSt(() => busy = false);
           if (!ctx.mounted) return;
-          if (ok) {
+          if (sessionOk) {
             Navigator.of(ctx).pop();
           } else {
             setSt(() {
               statusOk = false;
-              status = '已保存地址，但当前登录状态在该服务上无效，请重新登录';
+              status = '地址已保存，但当前登录态在该服务上无效，请重新登录';
             });
           }
         }
@@ -66,7 +88,7 @@ Future<void> showServerAddressDialog(BuildContext context) async {
                 controller: ctrl,
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
-                  hintText: 'http://120.26.204.70:8787',
+                  hintText: 'https://120-26-204-70.sslip.io',
                   labelText: '后端地址（含协议与端口）',
                 ),
                 style: const TextStyle(fontSize: 13),

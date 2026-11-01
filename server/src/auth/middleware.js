@@ -1,7 +1,7 @@
 import { get, run } from '../db/index.js';
 import { verifyToken, sha256 } from '../core/crypto.js';
 import { unauthorized, forbidden } from '../core/errors.js';
-import { nowIso } from '../core/util.js';
+import { nowIso, dayKey } from '../core/util.js';
 
 function extractToken(req) {
   const header = req.headers?.authorization || '';
@@ -19,6 +19,21 @@ export function resolveUser(token) {
   if (new Date(stored.expires_at).getTime() < Date.now()) return null;
   const user = get('SELECT * FROM users WHERE id = ?', payload.uid);
   if (!user || user.status !== 'active') return null;
+
+  // 登录令牌滑动续期：首次 3 天，每个自然日首次访问延长 1 天，最多 4 天
+  try {
+    const today = dayKey();
+    const lastDay = stored.last_renew_at ? dayKey(stored.last_renew_at) : null;
+    if (lastDay !== today) {
+      const now = Date.now();
+      const oldExp = new Date(stored.expires_at).getTime();
+      const nextExp = Math.max(oldExp, Math.min(now + 4 * 86400000, oldExp + 86400000));
+      run('UPDATE auth_tokens SET expires_at = ?, last_renew_at = ? WHERE token_hash = ?',
+        new Date(nextExp).toISOString(), new Date().toISOString(), stored.token_hash);
+    }
+  } catch {
+    /* 续期失败不影响认证 */
+  }
   return user;
 }
 

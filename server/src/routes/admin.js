@@ -13,6 +13,8 @@ import { getAdminSetting, setAdminSetting, getSmtpConfig, getOnebotConfig, merge
 import { sendMail } from '../mail/sender.js';
 import { usageFor } from './stats.js';
 import { onebotStatus } from '../onebot/server.js';
+import { collectServerStatus } from '../services/server-status.js';
+import { fetchVersions, startUpgrade, upgradeStatus } from '../services/upgrade.js';
 import env from '../env.js';
 
 const KEEP = new Set(['****', '••••••••', '[REDACTED]', 'unchanged']);
@@ -448,13 +450,25 @@ export default function register() {
     const smtp = getSmtpConfig();
     const onebot = getOnebotConfig();
     const update = getAdminSetting('update', {}) || {};
+    const integrations = getAdminSetting('integrations', {}) || {};
     res.json({
       smtp: maskedSmtp(),
       onebot: maskedOnebot(),
-      update: { force: Boolean(update.force), minVersion: String(update.minVersion || '') },
+      update: {
+        force: Boolean(update.force),
+        minVersion: String(update.minVersion || ''),
+        autoUpgrade: Boolean(update.autoUpgrade),
+        lastAutoUpgradeAt: update.lastAutoUpgradeAt || null,
+        lastAutoUpgradeTag: update.lastAutoUpgradeTag || null,
+      },
+      integrations: {
+        uapiKeySet: Boolean(integrations.uapiKey),
+        uapiKeyMasked: maskSecret(integrations.uapiKey),
+      },
       ready: {
         smtp: Boolean(smtp.host && smtp.user),
         onebot: Boolean(onebot.token || onebot.selfId),
+        integrations: Boolean(integrations.uapiKey) || Boolean(process.env.UAPI_KEY),
       },
     });
   });
@@ -476,6 +490,7 @@ export default function register() {
       submitted.push('update');
       const patch = {};
       if (body.update.force !== undefined) patch.force = Boolean(body.update.force);
+      if (body.update.autoUpgrade !== undefined) patch.autoUpgrade = Boolean(body.update.autoUpgrade);
       if (body.update.minVersion !== undefined) {
         const v = String(body.update.minVersion || '').trim();
         if (v && !/^\d+\.\d+\.\d+/.test(v)) throw badRequest('minVersion 需为 x.y.z 格式', 'min_version_invalid');
@@ -484,6 +499,19 @@ export default function register() {
       if (Object.keys(patch).length) {
         setAdminSetting('update', mergeDeep(getAdminSetting('update', {}) || {}, patch));
         changed.push('update');
+      }
+    }
+    if (body.integrations && typeof body.integrations === 'object') {
+      submitted.push('integrations');
+      const patch = {};
+      if (typeof body.integrations.uapiKey === 'string') {
+        if (!KEEP.has(body.integrations.uapiKey)) {
+          patch.uapiKey = body.integrations.uapiKey.trim().slice(0, 200);
+        }
+      }
+      if (Object.keys(patch).length) {
+        setAdminSetting('integrations', mergeDeep(getAdminSetting('integrations', {}) || {}, patch));
+        changed.push('integrations');
       }
     }
     if (body.onebot && typeof body.onebot === 'object') {
@@ -503,7 +531,14 @@ export default function register() {
       changed,
       smtp: maskedSmtp(),
       onebot: maskedOnebot(),
-      update: (() => { const u = getAdminSetting('update', {}) || {}; return { force: Boolean(u.force), minVersion: String(u.minVersion || '') }; })(),
+      update: (() => {
+        const u = getAdminSetting('update', {}) || {};
+        return { force: Boolean(u.force), minVersion: String(u.minVersion || ''), autoUpgrade: Boolean(u.autoUpgrade) };
+      })(),
+      integrations: (() => {
+        const i = getAdminSetting('integrations', {}) || {};
+        return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey) };
+      })(),
     });
   });
 
@@ -534,6 +569,40 @@ export default function register() {
   // ---------- 存储 ----------
   r.get('/storage', (_req, res) => {
     res.json(storageUsage());
+  });
+
+  // ---------- 服务器状态（CPU / 内存 / 磁盘 / 网络） ----------
+  r.get(
+    '/server-status',
+    asyncHandler(async (_req, res) => {
+      res.json(await collectServerStatus());
+    }),
+  );
+
+  // ---------- 后端升级 ----------
+  // GET /api/admin/upgrade/versions → [{tag,version,name,notes,publishedAt,asset,hasBackend}]
+  r.get(
+    '/upgrade/versions',
+    asyncHandler(async (req, res) => {
+      const versions = await fetchVersions({ force: String(req.query.refresh || '') === '1' });
+      res.json(versions);
+    }),
+  );
+
+  // POST /api/admin/upgrade {tag} → 202 {accepted, logId, tag, fromVersion, logPath, statusPath}
+  r.post(
+    '/upgrade',
+    asyncHandler(async (req, res) => {
+      const tag = String(req.body?.tag || '').trim();
+      const result = await startUpgrade({ tag, actorId: req.userId });
+      audit(req.userId, 'admin.upgrade.start', result.logId, { tag: result.tag, from: result.fromVersion }, req.ip);
+      res.status(202).json(result);
+    }),
+  );
+
+  // GET /api/admin/upgrade/status → {running,status,log,currentVersion,...}
+  r.get('/upgrade/status', (_req, res) => {
+    res.json(upgradeStatus());
   });
 
   // ---------- OneBot 状态 ----------

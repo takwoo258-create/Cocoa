@@ -1,4 +1,5 @@
 import '../core/json_utils.dart';
+import '../core/utils.dart';
 
 /// GET /api/version/latest 的最新版本信息。
 class LatestVersion {
@@ -50,8 +51,11 @@ class LatestVersion {
     return url;
   }
 
+  /// v1.2.0：+ / - / ± 转为 新增 / 删除 / 修改。
+  String get formattedNotes => formatUpdateNotes(notes);
+
   String get notesSummary {
-    final String flat = notes.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final String flat = formattedNotes.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (flat.length <= 120) return flat;
     return '${flat.substring(0, 120)}…';
   }
@@ -78,7 +82,7 @@ class VersionCheckResult {
   final LatestVersion latest;
   final bool updateAvailable;
 
-  /// v1.1.0：强制更新（忽略版本不能绕过）。
+  /// v1.1.0：需要更新（忽略版本不能绕过）。
   final bool forceUpdate;
   final String forceReason;
   final String minVersion;

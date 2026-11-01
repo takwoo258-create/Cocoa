@@ -4,8 +4,8 @@
 
 Cocoa 让用户自己配模型、自己捏角色：角色有独立人设、记忆、状态、作息、日记与创作，能通过 QQ 主动找人聊天，也能在 App 里被"叫醒"。所有文本落盘前多重对称加密，角色与角色、用户与用户之间数据完全隔离。
 
-- 最新版本：`v1.1.0`（更新日志见 [`update1.1.0.md`](update1.1.0.md)）
-- Android 安装包：GitHub Release 页面 → `Cocoa-v1.1.0.apk`
+- 最新版本：`v1.2.0`（更新日志见 [`update1.2.0.md`](update1.2.0.md)）
+- Android 安装包：GitHub Release 页面 → `Cocoa-v1.2.0.apk`（后端源码包 `Cocoa-backend-v1.2.0.zip` 同页）
 - 接口契约：[`docs/API.md`](docs/API.md)　部署手册：[`docs/DEPLOY.md`](docs/DEPLOY.md)
 
 ---
@@ -85,7 +85,7 @@ npm run dev         # 开发（--watch 热重启）
 
 # 4) 验证
 curl http://127.0.0.1:8787/api/health
-# {"ok":true,"name":"cocoa","version":"1.1.0","time":"…","uptime":1}
+# {"ok":true,"name":"cocoa","version":"1.2.0","time":"…","uptime":1}
 ```
 
 测试：
@@ -139,7 +139,7 @@ bash scripts/build-apk.sh      # 内含 pub get → analyze → build apk --rele
 ```
 
 产物：`app/build/app/outputs/flutter-apk/app-release.apk`，发布时复制为
-`/data/dsh/home/Cocoa-v1.1.0.apk` 并上传到 GitHub Release。
+`/data/dsh/home/Cocoa-v1.2.0.apk` 并上传到 GitHub Release。
 
 签名材料放在仓库外 `$COCOA_SIGN_DIR`（默认 `/data/dsh/home/.cocoa-sign/`）：`cocoa-release.jks` + `key.properties`，两者都不入库。
 
@@ -153,7 +153,7 @@ bash scripts/build-apk.sh      # 内含 pub get → analyze → build apk --rele
 
 | 项 | 值 |
 | --- | --- |
-| 地址 | `http://120.26.204.70:8787`（阿里云安全组已放行 8787/TCP） |
+| 地址 | **`https://120-26-204-70.sslip.io`**（Caddy + Let's Encrypt；`http://120.26.204.70:8787` 直连保留给旧客户端/WS） |
 | 健康检查 | `curl http://120.26.204.70:8787/api/health` → `{"ok":true,…}` |
 | 代码 / 数据 | `/opt/cocoa` / `/opt/cocoa/data` |
 | 服务 | `systemctl status cocoa`（`Restart=always`，`MemoryMax=900M`，堆上限 512M） |
@@ -255,7 +255,7 @@ Cocoa/
 ├── deploy/              install.sh、cocoa.service、deploy.mjs、backup/rollback、nginx/env 模板
 ├── scripts/             env.sh（构建环境）、install-toolchain.sh、build-apk.sh
 ├── docs/                API.md（契约）、DEPLOY.md（部署手册）
-├── update1.1.0.md       版本更新日志　（历史：update1.0.1.md / update1.0.0.md）
+├── update1.2.0.md       版本更新日志　（历史：update1.1.0.md / update1.0.1.md / update1.0.0.md）
 └── LICENSE              GPL-3.0
 ```
 

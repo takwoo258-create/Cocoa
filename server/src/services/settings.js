@@ -1,7 +1,12 @@
-import { get, run } from '../db/index.js';
+import { get, all, run } from '../db/index.js';
 import { encryptJson, decryptJson, encryptSystem, decryptSystem } from '../core/crypto.js';
 import { nowIso, parseJson } from '../core/util.js';
 import env from '../env.js';
+
+// v1.2.0 模型分享：可分享的服务集合（search 复用 deepseek，仅作兼容）
+export const SHARE_SERVICES = ['chat', 'embedding', 'deepseek', 'stt', 'tts', 'search'];
+const SHARE_CACHE_TTL_MS = 10_000;
+const shareCache = new Map(); // userId -> { at, data }
 
 const DEFAULT_API = {
   chat: { baseUrl: '', apiKey: '', model: '' },
@@ -43,6 +48,96 @@ export function getUserApiRaw(userId) {
   return row ? decryptJson(userId, row.payload, {}) : {};
 }
 
+function parseShareServices(text) {
+  try {
+    const arr = JSON.parse(String(text || '[]'));
+    if (!Array.isArray(arr)) return [];
+    return arr.map((s) => String(s)).filter((s) => SHARE_SERVICES.includes(s));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * v1.2.0：解析“分享给该用户且仍然有效”的模型配置。
+ * - direction=share：owner 分享给 target → 使用方是 target，payload 用 owner 密钥加密
+ * - direction=request：owner 向 target 索要 → 使用方是 owner，payload 用 target 密钥加密
+ * 返回 { shared: {service: config}, meta: {service: {shareId,ownerCode,ownerNickname,expiresAt,model}} }
+ * 绝不对外返回 apiKey，仅用于服务端调用。
+ */
+export function getSharedApi(userId) {
+  const uid = String(userId || '');
+  if (!uid) return { shared: {}, meta: {} };
+  const cached = shareCache.get(uid);
+  if (cached && Date.now() - cached.at < SHARE_CACHE_TTL_MS) return cached.data;
+
+  const now = nowIso();
+  const rows = all(
+    `SELECT * FROM model_shares
+      WHERE status IN ('accepted', 'active')
+        AND (permanent = 1 OR expires_at IS NULL OR expires_at > ?)
+        AND (owner_id = ? OR target_id = ?)
+      ORDER BY created_at ASC`,
+    now,
+    uid,
+    uid,
+  );
+  const entries = [];
+  const ownerIds = new Set();
+  for (const row of rows) {
+    const consumerId = row.direction === 'request' ? row.owner_id : row.target_id;
+    if (consumerId !== uid) continue;
+    const configOwnerId = row.direction === 'request' ? row.target_id : row.owner_id;
+    entries.push({ row, configOwnerId });
+    ownerIds.add(configOwnerId);
+  }
+  const owners = new Map();
+  for (const id of ownerIds) {
+    const u = get('SELECT id, code, username FROM users WHERE id = ?', id);
+    if (u) owners.set(id, u);
+  }
+
+  const shared = {};
+  const meta = {};
+  for (const { row, configOwnerId } of entries) {
+    const payload = decryptJson(configOwnerId, row.payload, null);
+    if (!payload || typeof payload !== 'object') continue;
+    const owner = owners.get(configOwnerId) || {};
+    for (const svc of parseShareServices(row.services)) {
+      if (shared[svc]) continue; // 多个分享时先到先得
+      const conf = payload[svc];
+      if (!conf || !conf.apiKey) continue;
+      shared[svc] = {
+        baseUrl: conf.baseUrl || '',
+        apiKey: String(conf.apiKey),
+        model: conf.model || '',
+        voice: conf.voice || '',
+        extra: conf.extra && typeof conf.extra === 'object' ? conf.extra : {},
+      };
+      meta[svc] = {
+        shareId: row.id,
+        ownerId: configOwnerId,
+        ownerCode: owner.code ?? null,
+        ownerNickname: owner.username || '',
+        expiresAt: row.expires_at || null,
+        permanent: Boolean(row.permanent),
+        model: conf.model || '',
+        direction: row.direction,
+      };
+    }
+  }
+  const data = { shared, meta };
+  if (shareCache.size > 4000) shareCache.clear();
+  shareCache.set(uid, { at: Date.now(), data });
+  return data;
+}
+
+/** 分享创建/响应/撤销/到期后清理缓存（不传 userId 清空全部） */
+export function invalidateShareCache(userId = null) {
+  if (userId) shareCache.delete(String(userId));
+  else shareCache.clear();
+}
+
 export function getUserApi(userId) {
   const raw = getUserApiRaw(userId);
   const merged = mergeDeep(DEFAULT_API, raw);
@@ -59,6 +154,23 @@ export function getUserApi(userId) {
   if (!merged.search.apiKey && merged.deepseek.apiKey) {
     merged.search = { ...merged.search, apiKey: merged.deepseek.apiKey, baseUrl: merged.deepseek.baseUrl };
   }
+
+  // v1.2.0：用户未配置 apiKey 的服务，自动合并有效的他人分享
+  const { shared, meta } = getSharedApi(userId);
+  const effectiveMeta = {};
+  for (const [svc, conf] of Object.entries(shared)) {
+    if (merged[svc]?.apiKey) continue;
+    merged[svc] = { ...(merged[svc] || {}), ...conf };
+    if (meta[svc]) effectiveMeta[svc] = meta[svc];
+  }
+  if (!merged.deepseek.apiKey && merged.chat.apiKey && /deepseek/i.test(merged.chat.baseUrl || merged.chat.model || '')) {
+    merged.deepseek = { ...merged.deepseek, apiKey: merged.chat.apiKey, baseUrl: merged.chat.baseUrl || merged.deepseek.baseUrl };
+  }
+  if (!merged.search.apiKey && merged.deepseek.apiKey) {
+    merged.search = { ...merged.search, apiKey: merged.deepseek.apiKey, baseUrl: merged.deepseek.baseUrl };
+  }
+  // 元信息（不含 apiKey），供 GET /api/config 展示；仅包含实际生效的分享服务
+  merged.shared = effectiveMeta;
   return merged;
 }
 

@@ -121,8 +121,11 @@ export function chatRoutes() {
       const result = await wakeCharacter({ userId: req.userId, characterId: character.id, text });
       res.json({
         ok: Boolean(result.ok),
-        wakeup: result.wakeup ?? 0,
+        wakeup: result.wakeup ?? 1,
+        state: result.state || null,
+        reply: result.reply ?? null,
         reason: result.reason || null,
+        notice: result.notice || null,
         ...(result.error ? { error: result.error } : {}),
       });
     }),

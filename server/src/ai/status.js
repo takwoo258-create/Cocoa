@@ -1,7 +1,7 @@
 // 角色状态与作息（build.md 二.7/8/14、七.5）
 // - 每 10 分钟（软限额时 4 小时一次）结合人设与世界状况请求 status JSON，updateState + WS {type:'state'}
 // - 健康/心情异常：state 上标注 flags，并写 messages.kind='status'（meta.flags 加密，统计依赖此约定）
-// - 作息：按 character.settings.sleep（UTC+8）判断 sleeping/napping，命中时返回固定文案
+// - 作息：v1.2.0 起由模型状态决定（character_state.sleep_state: awake/napping/sleeping），不再读取用户作息设置
 import { all, run } from '../db/index.js';
 import { nowIso, uuid } from '../core/util.js';
 import { encryptText, encryptJson } from '../core/crypto.js';
@@ -9,13 +9,24 @@ import { broadcast } from '../realtime/hub.js';
 import { getCharacter, getSettings, ensureState, updateState } from '../services/characters.js';
 import { enqueue, cancelJobs, nextJob } from '../services/jobs.js';
 import { recordUsage } from './usage.js';
-import { parseReply } from './reply.js';
+import { parseReply, extractJson } from './reply.js';
 import { ensureBackgroundConversation, limitState } from './context.js';
 import * as defaultProvider from './provider.js';
 import logger from '../core/logger.js';
 
 export const SLEEP_SUFFIX = '若强行叫醒的话，可能会带来不必要的麻烦哦';
 export const STATUS_HARD_RETRY_MS = 60 * 60_000;
+export const MANUAL_REFRESH_COOLDOWN_MS = 5 * 60_000;
+
+/** 模型作息值归一化：awake | napping | sleeping（兼容旧的 nap/sleep/awake_override） */
+export function normalizeSleepState(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  if (['awake', 'awake_override', 'wake', '清醒', '醒着', '醒'].includes(raw)) return 'awake';
+  if (['napping', 'nap', '午睡', '小睡', '打盹', '休息'].includes(raw)) return 'napping';
+  if (['sleeping', 'sleep', '睡眠', '睡觉', '夜间睡眠', '熟睡'].includes(raw)) return 'sleeping';
+  return null;
+}
 
 // ---------------- 作息 ----------------
 
@@ -71,28 +82,34 @@ export function sleepMode(settings, date = new Date()) {
 /** 固定提示文案（build.md 二.14，每句后追加唤醒风险提示） */
 export function sleepNotice(name, mode) {
   const n = String(name || '角色');
-  if (mode === 'nap') return `${n}在休息哦，要稍后再来找他/她吧 ${SLEEP_SUFFIX}`;
-  if (mode === 'sleep') return `夜深了，明天再来找他/她吧，你也要早点睡哦 ${SLEEP_SUFFIX}`;
+  const normalized = normalizeSleepState(mode) || mode;
+  if (normalized === 'napping') return `${n}在休息哦，要稍后再来找他/她吧 ${SLEEP_SUFFIX}`;
+  if (normalized === 'sleeping') return `夜深了，明天再来找他/她吧，你也要早点睡哦 ${SLEEP_SUFFIX}`;
   return '';
 }
 
-/** 是否处于需要拒绝发送的休息状态 */
-export function restingState(character) {
-  const settings = character?.settings || {};
-  return sleepMode(settings, new Date()).mode;
+/** 是否处于需要拒绝发送的休息状态（v1.2.0：以模型写入的 state.sleep_state 为准） */
+export function restingState(character, state = null) {
+  return effectiveSleep(character, state || {}, new Date()).mode;
 }
 
 /**
- * 生效中的作息：作息规则命中时，若角色状态被显式唤醒（sleep_state='awake_override'）则按清醒处理。
- * 唤醒标记会在作息窗口结束后的下一次状态刷新时自然清除。
+ * 生效中的作息（v1.2.0）：
+ * - 优先使用模型在状态刷新时写入的 character_state.sleep_state；
+ * - 不再读取 character.settings.sleep（用户作息设置已从前端移除）；
+ * - 无状态/未知值兜底为 awake。
+ * @returns {{mode:'awake'|'napping'|'sleeping', hhmm:string, day:string, source:'model'|'default'}}
  */
 export function effectiveSleep(character, state, date = new Date()) {
-  const computed = sleepMode(character?.settings, date);
-  if (computed.mode === 'awake') return computed;
-  if (state?.sleep_state === 'awake_override') {
-    return { mode: 'awake', override: true, computed: computed.mode, hhmm: computed.hhmm, day: computed.day };
+  const parts = tzParts(date);
+  const normalized = normalizeSleepState(state?.sleep_state);
+  if (normalized === 'napping' || normalized === 'sleeping') {
+    return { mode: normalized, hhmm: parts.hhmm, day: parts.day, source: 'model' };
   }
-  return computed;
+  if (normalized === 'awake') {
+    return { mode: 'awake', hhmm: parts.hhmm, day: parts.day, source: 'model' };
+  }
+  return { mode: 'awake', hhmm: parts.hhmm, day: parts.day, source: 'default' };
 }
 
 
@@ -124,9 +141,10 @@ export function buildStatusPrompt(character, state, { softLimited = false } = {}
     `当前状态：动作「${state.motion || '安静地待着'}」，心理「${state.psychology || '平静'}」，心情「${state.mood || '平静'}」，健康「${state.health || '健康'}」。`,
     `当前时间：${parts.day} ${parts.hhmm}（UTC+8）。`,
     '请结合种族、性别与设定推断生理状态、健康程度与是否患病，并给出一小段动作、心理活动、心情、健康状态。',
+    `当前作息：${normalizeSleepState(state?.sleep_state) || 'awake'}（awake 清醒 / napping 午睡或小睡 / sleeping 夜间睡眠）。请结合当前时间、人设与健康状况重新判断此刻是否清醒、在午睡还是在睡觉。`,
     '健康与心情正常时 healthAbnormal/moodAbnormal 为 false；出现疾病、受伤、明显不适或强烈负面情绪时为 true。',
     '只输出一个 JSON 对象，不要代码块或多余文字：',
-    '{"type":"status","motion":"","psychology":"","mood":"","health":"","healthAbnormal":false,"moodAbnormal":false}',
+    '{"type":"status","motion":"","psychology":"","mood":"","health":"","sleepState":"awake","healthAbnormal":false,"moodAbnormal":false}',
     softLimited ? '（当前为软限额状态：只做最必要的状态描述，简洁。）' : '',
   ]
     .filter(Boolean)
@@ -190,20 +208,9 @@ export async function refreshStatus({ userId, characterId, provider = defaultPro
 
   const state = ensureState(characterId, userId);
   const settings = character.settings || getSettings(characterId, userId);
-  const sleep = effectiveSleep(character, state, new Date());
-  try {
-    if (sleep.mode === 'awake' && state.sleep_state !== 'awake') {
-      // 作息窗口结束：清除唤醒豁免标记
-      updateState(characterId, { sleepState: 'awake' });
-    } else if (sleep.mode !== 'awake' && state.sleep_state !== 'awake_override' && state.sleep_state !== sleep.mode) {
-      updateState(characterId, { sleepState: sleep.mode });
-    }
-  } catch (err) {
-    logger.warn('状态刷新：写入作息失败', err?.message);
-  }
-
   let parsed = null;
   let model = null;
+  let rawStatus = null;
   try {
     const res = await provider.chatText(userId, {
       task: 'status',
@@ -219,6 +226,7 @@ export async function refreshStatus({ userId, characterId, provider = defaultPro
     model = res?.model || null;
     recordUsage({ userId, characterId, kind: 'status', model, usage: res?.usage || {}, cost: res?.cost });
     parsed = parseReply(res?.text ?? '', { segmentEnabled: false });
+    rawStatus = extractJson(res?.text ?? '') || null;
   } catch (err) {
     logger.warn('状态刷新失败', err?.message || err);
     scheduleStatusRefresh({
@@ -235,11 +243,16 @@ export async function refreshStatus({ userId, characterId, provider = defaultPro
     return { ok: false, reason: 'parse_failed', raw: String(parsed?.content || '').slice(0, 200) };
   }
 
+  const modelSleep =
+    normalizeSleepState(rawStatus?.sleepState ?? rawStatus?.sleep_state) ||
+    normalizeSleepState(state.sleep_state) ||
+    'awake';
   const nextState = {
     motion: parsed.fields.motion || state.motion || '安静地待着',
     psychology: parsed.fields.psychology || state.psychology || '',
     mood: parsed.fields.mood || state.mood || '平静',
     health: parsed.fields.health || state.health || '健康',
+    sleepState: modelSleep,
   };
   const flags = detectAbnormal({ ...nextState, ...(parsed.flags || {}) });
   updateState(characterId, nextState);
@@ -248,21 +261,66 @@ export async function refreshStatus({ userId, characterId, provider = defaultPro
     userId,
     characterId,
     content: JSON.stringify({ type: 'status', ...nextState, ...flags }),
-    meta: { flags, mood: nextState.mood, health: nextState.health, model },
+    meta: { flags, mood: nextState.mood, health: nextState.health, sleepState: nextState.sleepState, model },
   });
 
   broadcast(userId, {
     type: 'state',
     state: {
       ...nextState,
-      sleepState: sleep.mode,
       flags,
       updatedAt: nowIso(),
     },
   });
 
   scheduleStatusRefresh({ userId, characterId, softLimited: limits.softLimited, settings });
-  return { ok: true, state: nextState, flags, messageId, sleepState: sleep.mode };
+  return { ok: true, state: nextState, flags, messageId, sleepState: nextState.sleepState };
+}
+
+/**
+ * 手动刷新冷却（v1.2.0）：以 character_state.last_manual_refresh_at 为基准，5 分钟内只允许一次。
+ */
+export function manualRefreshCooldown(userId, characterId) {
+  const state = ensureState(characterId, userId);
+  const lastRaw = state?.last_manual_refresh_at || null;
+  const last = lastRaw ? Date.parse(lastRaw) : 0;
+  const now = Date.now();
+  const next = last ? last + MANUAL_REFRESH_COOLDOWN_MS : 0;
+  const allowed = !last || now >= next;
+  return {
+    allowed,
+    retryAfterSec: allowed ? 0 : Math.max(1, Math.ceil((next - now) / 1000)),
+    nextAllowedAt: new Date(allowed ? now : next).toISOString(),
+    lastManualRefreshAt: lastRaw,
+  };
+}
+
+/**
+ * 立即刷新状态（POST /api/characters/:id/status/refresh 调用）。
+ * 冷却中返回 {ok:false, reason:'cooldown', retryAfterSec, nextAllowedAt}。
+ * 成功返回 {ok:true, state, flags, messageId, nextAllowedAt, retryAfterSec:0}。
+ */
+export async function refreshStatusNow({ userId, characterId, provider = defaultProvider } = {}) {
+  const character = getCharacter(userId, characterId);
+  if (!character) return { ok: false, reason: 'character_not_found', retryAfterSec: 0, nextAllowedAt: null };
+  const cooldown = manualRefreshCooldown(userId, characterId);
+  if (!cooldown.allowed) {
+    return {
+      ok: false,
+      reason: 'cooldown',
+      retryAfterSec: cooldown.retryAfterSec,
+      nextAllowedAt: cooldown.nextAllowedAt,
+    };
+  }
+  // 先记冷却时间，避免并发/失败时被连续点击
+  run('UPDATE character_state SET last_manual_refresh_at = ? WHERE character_id = ?', nowIso(), characterId);
+  const result = await refreshStatus({ userId, characterId, provider });
+  const after = manualRefreshCooldown(userId, characterId);
+  return {
+    ...result,
+    retryAfterSec: after.retryAfterSec,
+    nextAllowedAt: after.nextAllowedAt,
+  };
 }
 
 /**
@@ -298,4 +356,8 @@ export default {
   statusIntervalMs,
   bootstrapStatusJobs,
   buildStatusPrompt,
+  normalizeSleepState,
+  manualRefreshCooldown,
+  refreshStatusNow,
+  MANUAL_REFRESH_COOLDOWN_MS,
 };

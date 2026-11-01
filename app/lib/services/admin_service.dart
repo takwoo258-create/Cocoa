@@ -145,4 +145,27 @@ class AdminService {
   Future<Map<String, dynamic>> onebotStatus() async {
     return asMap(await api.get('/admin/onebot/status', silent: true));
   }
+
+  /// v1.2.0：服务器状态（CPU/内存/磁盘/网络）。
+  Future<Map<String, dynamic>> serverStatus() async {
+    return asMap(await api.get('/admin/server-status', silent: true));
+  }
+
+  /// v1.2.0：后端可升级版本列表。
+  Future<List<Map<String, dynamic>>> upgradeVersions() async {
+    final dynamic r = await api.get('/admin/upgrade/versions', silent: true);
+    final List<dynamic> raw = r is List ? r : asList(asMap(r)['items']);
+    return asMapList(raw);
+  }
+
+  Future<Map<String, dynamic>> startUpgrade(String tag) async {
+    return asMap(await api.post(
+      '/admin/upgrade',
+      body: <String, dynamic>{'tag': tag},
+    ));
+  }
+
+  Future<Map<String, dynamic>> upgradeStatus() async {
+    return asMap(await api.get('/admin/upgrade/status', silent: true));
+  }
 }

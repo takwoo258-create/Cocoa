@@ -874,20 +874,16 @@ test('active: 用户发消息取消等待期；POST active-reply 立即生成主
   assert.ok(rows.some((r) => decryptText(userId, r.content).includes('我突然想起你啦')));
 });
 
-test('active: 角色午睡时拒绝发送并返回固定文案，wakeup=1 后调整状态并回复', async () => {
+test('active: 模型睡眠状态命中时拒绝发送并返回固定文案，wakeup=1 后调整状态并回复', async () => {
   const character = freshCharacter();
   const fake = fakeProvider();
   chat.setChatProvider(fake.provider);
 
-  // 构造覆盖当前 UTC+8 时刻的睡眠窗口
-  const parts = status.tzParts(new Date());
-  const pad = (n) => String(n).padStart(2, '0');
-  const startMin = (parts.minutesOfDay - 60 + 1440) % 1440;
-  const endMin = (parts.minutesOfDay + 60) % 1440;
-  const window = { enabled: true, start: `${pad(Math.floor(startMin / 60))}:${pad(startMin % 60)}`, end: `${pad(Math.floor(endMin / 60))}:${pad(endMin % 60)}`, napStart: '00:00', napEnd: '00:00' };
-  updateCharacter(userId, character.id, { settings: { sleep: window } });
-  const refreshed = getCharacter(userId, character.id);
-  assert.equal(status.sleepMode(refreshed.settings, new Date()).mode, 'sleep');
+  // v1.2.0：作息由模型写入 state.sleep_state 决定；用户 settings.sleep 不再影响拦截
+  updateCharacter(userId, character.id, { settings: { sleep: { enabled: false } } });
+  updateState(character.id, { sleepState: 'sleeping' });
+  const current = getCharacter(userId, character.id);
+  assert.equal(status.effectiveSleep(current, ensureState(character.id, userId), new Date()).mode, 'sleeping');
 
   const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '睡了吗' });
   assert.equal(out.accepted, false);
@@ -903,11 +899,153 @@ test('active: 角色午睡时拒绝发送并返回固定文案，wakeup=1 后调
   await waitFor(() => {
     const stateRow = ensureState(character.id, userId);
     const agentRows = all("SELECT * FROM messages WHERE character_id = ? AND role = 'agent'", character.id);
-    return stateRow.sleep_state === 'awake_override' && agentRows.length > 0;
+    return stateRow.sleep_state === 'awake' && agentRows.length > 0;
   });
   const agent = lastAgentMessage(character.id);
   assert.ok(agent.plain.includes('我醒了'));
   assert.equal(status.effectiveSleep(getCharacter(userId, character.id), ensureState(character.id, userId), new Date()).mode, 'awake');
+});
+
+test('status: 模型返回 sleepState 写入 character_state，effectiveSleep 优先模型状态', async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider({
+    main: async () => ({ text: '{}', usage: { input: 1, output: 1 }, model: 'fake' }),
+  });
+  let statusPrompt = '';
+  const provider = {
+    ...fake.provider,
+    async chatText(uid, opts) {
+      if (opts.task === 'status') {
+        statusPrompt = String(opts.messages?.[0]?.content || '');
+        return {
+          text: JSON.stringify({ type: 'status', motion: '趴在桌上', psychology: '犯困', mood: '困倦', health: '健康', sleepState: 'napping', healthAbnormal: false, moodAbnormal: false }),
+          usage: { input: 5, output: 5 },
+          model: 'fake-status',
+        };
+      }
+      return fake.provider.chatText(uid, opts);
+    },
+  };
+  const out = await status.refreshStatus({ userId, characterId: character.id, provider });
+  assert.equal(out.ok, true);
+  assert.equal(out.sleepState, 'napping');
+  assert.ok(statusPrompt.includes('sleepState'), '状态 prompt 应要求模型输出 sleepState');
+  assert.equal(ensureState(character.id, userId).sleep_state, 'napping');
+  const sleep = status.effectiveSleep(getCharacter(userId, character.id), ensureState(character.id, userId), new Date());
+  assert.equal(sleep.mode, 'napping');
+  assert.equal(sleep.source, 'model');
+  // 无状态兜底 awake
+  assert.equal(status.effectiveSleep({}, {}, new Date()).mode, 'awake');
+  assert.equal(status.effectiveSleep({}, { sleep_state: 'awake_override' }, new Date()).mode, 'awake');
+});
+
+test('status: 手动刷新 5 分钟冷却与 refreshStatusNow', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+  savePrefs(userId, { limits: { enabled: true, hardTokens: 0, softTokens: 0 } });
+
+  const before = status.manualRefreshCooldown(userId, character.id);
+  assert.equal(before.allowed, true);
+
+  const first = await status.refreshStatusNow({ userId, characterId: character.id, provider: fake.provider });
+  assert.equal(first.ok, true);
+  assert.ok(first.state && first.state.sleepState);
+  assert.equal(typeof first.nextAllowedAt, 'string');
+
+  const cooling = status.manualRefreshCooldown(userId, character.id);
+  assert.equal(cooling.allowed, false);
+  assert.ok(cooling.retryAfterSec > 0 && cooling.retryAfterSec <= 300);
+  const second = await status.refreshStatusNow({ userId, characterId: character.id, provider: fake.provider });
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, 'cooldown');
+  assert.ok(second.retryAfterSec > 0);
+
+  // 冷却过后恢复
+  run("UPDATE character_state SET last_manual_refresh_at = ? WHERE character_id = ?", new Date(Date.now() - 6 * 60_000).toISOString(), character.id);
+  assert.equal(status.manualRefreshCooldown(userId, character.id).allowed, true);
+});
+
+test('chat: wakeCharacter 强制 awake、刷新状态并生成 reason=wake 的回复', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider();
+  const provider = {
+    ...fake.provider,
+    async chatText(uid, opts) {
+      if (opts.task === 'status') {
+        return {
+          text: JSON.stringify({ type: 'status', motion: '缩在被窝里', psychology: '迷迷糊糊', mood: '困倦', health: '健康', sleepState: 'sleeping', healthAbnormal: false, moodAbnormal: false }),
+          usage: { input: 3, output: 3 },
+          model: 'fake-status',
+        };
+      }
+      return fake.provider.chatText(uid, opts);
+    },
+  };
+  updateState(character.id, { sleepState: 'sleeping' });
+
+  const out = await chat.wakeCharacter({ userId, characterId: character.id, text: '醒醒啦', provider });
+  assert.equal(out.ok, true);
+  assert.equal(out.wakeup, 1);
+  assert.equal(out.state.sleepState, 'awake', '返回状态必须是 awake');
+  assert.equal(ensureState(character.id, userId).sleep_state, 'awake', '模型刷新又判睡眠也要强制覆盖');
+  assert.ok(out.reply && out.reply.includes('我醒了'), '应生成一次 wake 回复');
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.meta.reason, 'wake');
+});
+
+test('chat: wakeCharacter 模型失败也保持 awake 并返回可读提示', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  updateState(character.id, { sleepState: 'sleeping' });
+  const broken = {
+    async chatText() {
+      throw new Error('sdk down');
+    },
+  };
+  const out = await chat.wakeCharacter({ userId, characterId: character.id, text: '醒醒', provider: broken });
+  assert.equal(out.ok, true);
+  assert.equal(ensureState(character.id, userId).sleep_state, 'awake', '失败也必须置 awake');
+  assert.ok(out.notice && out.notice.includes('叫醒'), '应返回可读提示');
+  assert.equal(out.reply, null);
+});
+
+test('chat: reasoning 写入 meta.thinking（4000 截断），绝不混入 content', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const longReasoning = '内心'.repeat(2_500); // 5000 字
+  const fake = fakeProvider({
+    main: async () => ({
+      text: JSON.stringify({ type: 'message', content: '我在呢', agent: [{ content: '我在呢', wait: 0 }] }),
+      reasoning: longReasoning,
+      usage: { input: 8, output: 4 },
+      model: 'fake-thinking',
+    }),
+  });
+  chat.setChatProvider(fake.provider);
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '在吗' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true);
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.plain, '我在呢');
+  assert.ok(!agent.plain.includes('内心'), 'content 不能混入思考');
+  assert.equal(typeof agent.meta.thinking, 'string');
+  assert.equal(agent.meta.thinking.length, 4_000, '思考内容截断到 4000 字');
+  assert.ok(agent.content.startsWith('c2.'), 'meta 应加密存储');
+});
+
+test('chat: system prompt 注入角色对用户的称呼（userAddress 优先，空则昵称）', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+
+  updateCharacter(userId, character.id, { settings: { userAddress: '阿盐' } });
+  const first = await chat.submitUserMessage({ userId, characterId: character.id, content: '在吗' });
+  await first.waitForReply;
+  assert.ok(fake.state.lastSystemText.includes('你对用户的称呼：阿盐'), '应使用 settings.userAddress');
+
+  updateCharacter(userId, character.id, { settings: { userAddress: '' } });
+  const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '又来了' });
+  await second.waitForReply;
+  assert.ok(fake.state.lastSystemText.includes('你对用户的称呼：u_ai_chat_test'), 'userAddress 为空时回退用户昵称');
 });
 
 test('limits: 硬限额拒绝主会话并提示；软限额只影响状态刷新频率', async () => {
@@ -973,6 +1111,8 @@ test('limits: prefs.limits.enabled=false 时不拦截硬/软限额', { timeout: 
 test('context: contextLimits 以主模型为优先，并同步 conversations.context_limit 与占用', async () => {
   const character = freshCharacter();
   const model = resolveModel(userId, 'main');
+  savePrefs(userId, { contextLimits: { default: 2_048 } });
+  assert.equal(context.contextLimitFor(userId, character.id), 2_048, 'default 覆盖应生效');
   savePrefs(userId, { contextLimits: { [model]: 4_321, default: 1_000, [character.id]: 999 } });
   assert.equal(context.contextLimitFor(userId, character.id), 4_321, '主模型覆盖优先于 default/角色');
 
@@ -1213,6 +1353,8 @@ test('routes: /api/chat 与 /api/characters 双前缀、鉴权、历史/上下�
     const wakeBody = await wakeRes.json();
     assert.equal(wakeBody.ok, true);
     assert.equal(wakeBody.wakeup, 1);
+    assert.equal(wakeBody.state.sleepState, 'awake');
+    assert.ok(wakeBody.reply, 'wake 应返回一次回复');
 
     // 越权：别人的角色
     const otherCharacter = createCharacter(otherUserId, { name: '别人家的' });

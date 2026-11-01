@@ -29,3 +29,6 @@ backups/
 
 # 项目需求书含明文凭据（GitHub PAT / 服务器密码），永不入库
 build.md
+
+# 含第三方 API 密钥的需求书，永不入库
+changelog1.2.0.md

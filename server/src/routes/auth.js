@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { get, run } from '../db/index.js';
+import { get, run, db } from '../db/index.js';
 import { hashPassword, verifyPassword, signToken, sha256, randomCode, randomToken, hmac } from '../core/crypto.js';
 import { nowIso, uuid } from '../core/util.js';
 import { badRequest, conflict, unauthorized, asyncHandler } from '../core/errors.js';
 import { sendCodeEmail } from '../mail/sender.js';
 import { rateLimit, clientKey } from '../core/ratelimit.js';
 import { requireAuth } from '../auth/middleware.js';
+import { nextUserCode } from '../db/migrations.js';
 import env from '../env.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -14,7 +15,9 @@ export function publicUser(row) {
   if (!row) return null;
   return {
     id: row.id,
+    code: row.code ?? null,
     username: row.username,
+    nickname: row.username,
     email: row.email,
     qq: row.qq,
     role: row.role,
@@ -121,15 +124,17 @@ export default function register() {
 
       const { hash, salt } = hashPassword(password);
       const id = `u_${randomToken(9)}`;
+      const userCode = nextUserCode(db);
       run(
-        `INSERT INTO users(id, username, email, password_hash, password_salt, role, qq, email_verified, created_at)
-         VALUES(?,?,?,?,?,'user',?,1,?)`,
+        `INSERT INTO users(id, username, email, password_hash, password_salt, role, qq, code, email_verified, created_at)
+         VALUES(?,?,?,?,?,'user',?,?,1,?)`,
         id,
         username,
         email,
         hash,
         salt,
         qq,
+        userCode,
         nowIso(),
       );
       const user = get('SELECT * FROM users WHERE id = ?', id);

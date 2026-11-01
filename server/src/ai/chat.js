@@ -39,7 +39,7 @@ import {
   COMPRESS_THRESHOLD,
 } from './context.js';
 import { compressConversation } from './compress.js';
-import { effectiveSleep, sleepNotice } from './status.js';
+import { effectiveSleep, sleepNotice, refreshStatus } from './status.js';
 import { markAgentSent, markUserReplied, judgeWakeup } from './active.js';
 import * as defaultProvider from './provider.js';
 
@@ -391,7 +391,7 @@ function detectVoiceReply(userId, conversationId) {
 
 // ---------------- 提示词 ----------------
 
-export function buildSystemPrompt({ character, state, summary = '', memory = '', thinking = false, segmentEnabled = true, sleepState = 'awake' } = {}) {
+export function buildSystemPrompt({ character, state, summary = '', memory = '', thinking = false, segmentEnabled = true, sleepState = 'awake', userAddress = '' } = {}) {
   const time = new Date(Date.now() + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 16);
   return [
     `你是「${character.name}」，正在和你的${character.relation || '重要的人'}通过聊天软件聊天。`,
@@ -402,8 +402,9 @@ export function buildSystemPrompt({ character, state, summary = '', memory = '',
     `- 爱好：${character.hobbies || '未设定'}`,
     `- 外观：${character.appearance || '未设定'}`,
     `- 职业：${character.occupation || '未设定'}`,
-    `当前状态：动作「${state?.motion || '安静地待着'}」，心理「${state?.psychology || ''}」，心情「${state?.mood || '平静'}」，健康「${state?.health || '健康'}」，${sleepState === 'awake' ? '醒着' : sleepState === 'nap' ? '正在午睡' : '正在睡觉'}。`,
+    `当前状态：动作「${state?.motion || '安静地待着'}」，心理「${state?.psychology || ''}」，心情「${state?.mood || '平静'}」，健康「${state?.health || '健康'}」，${sleepState === 'awake' ? '醒着' : sleepState === 'napping' ? '正在午睡' : '正在睡觉'}。`,
     `现在时间：${time}（UTC+8）。`,
+    userAddress ? `你对用户的称呼：${userAddress}（请自然使用，不要生硬重复）` : '',
     summary ? `你记得之前聊过的事：\n${summary}` : '',
     memory ? `你记得关于对方的这些细节：\n${memory}` : '',
     '回复要求：口语化、简短、自然，像真人发消息；不要长篇大论、不要列清单、不要说教；通常一两句话就够。',
@@ -511,7 +512,7 @@ async function afterAgentSent({ userId, characterId, conversation, state, reason
 }
 
 /** 智能体文字回复（含分段 jobs、可选 TTS 语音） */
-async function sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply }) {
+async function sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '' }) {
   const segments = (parsed.segments || []).filter((s) => String(s.content || '').trim());
   if (!segments.length) return { ok: false, sent: false, reason: 'empty_reply' };
 
@@ -519,11 +520,13 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
   const fullText = String(parsed.content || segments.map((s) => s.content).join('')).trim();
   const voice = wantsVoice ? await maybeSynthesize({ userId, characterId, text: fullText }) : null;
 
+  const thinkingText = String(reasoning || '').trim().slice(0, 4_000);
   const meta = {
     segment: 1,
     segments: segments.length,
     wait: segments[0].wait || 0,
-    thinking: Boolean(thinking),
+    thinkingMode: Boolean(thinking),
+    ...(thinkingText ? { thinking: thinkingText } : {}),
     reason,
     ...(voice ? { voiceMediaId: voice.id, voiceUrl: voice.url, voiceMime: voice.mime } : {}),
   };
@@ -564,13 +567,14 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
     content: fullText,
     segments: segments.length,
     thinking: Boolean(thinking),
+    thinkingText: thinkingText || null,
     voiceMediaId: voice?.id || null,
     voiceUrl: voice?.url || null,
     ...after,
   };
 }
 
-async function handleParsedReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply }) {
+async function handleParsedReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '' }) {
   if (parsed.type === 'subjective') {
     return deliverSubjective({
       userId,
@@ -598,7 +602,7 @@ async function handleParsedReply({ userId, characterId, conversation, state, par
   if (parsed.type === 'wakeup') {
     return { ok: true, sent: false, type: 'wakeup', wakeup: parsed.wakeup };
   }
-  return sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply });
+  return sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning });
 }
 
 // ---------------- 回复可靠性（v1.0.1） ----------------
@@ -700,6 +704,9 @@ async function generateOnce(opts, s) {
       text: triggerText,
       provider: prov,
     });
+    const userRow = get('SELECT * FROM users WHERE id = ?', userId);
+    const nickname = String(userRow?.nickname || userRow?.username || '').trim();
+    const userAddress = String(character.settings?.userAddress || '').trim() || nickname;
     const history = promptHistory(userId, conversation.id, 30);
     const messages = [
       {
@@ -712,6 +719,7 @@ async function generateOnce(opts, s) {
           thinking: useThinking,
           segmentEnabled,
           sleepState: sleep.mode,
+          userAddress,
         }),
       },
     ];
@@ -728,6 +736,7 @@ async function generateOnce(opts, s) {
     });
     let parsed = parseReply(res?.text ?? '', { segmentEnabled });
     let retried = false;
+    let reasoningText = String(res?.reasoning || '').trim();
 
     if (replyNeedsRetry(res, parsed, reason)) {
       logger.warn('模型回复为空或无效，使用严格指令重试一次', {
@@ -747,6 +756,8 @@ async function generateOnce(opts, s) {
         });
         recordUsage({ userId, characterId, kind: 'main', model: res?.model, usage: res?.usage || {}, cost: res?.cost });
         parsed = parseReply(res?.text ?? '', { segmentEnabled });
+        const retryReasoning = String(res?.reasoning || '').trim();
+        if (retryReasoning) reasoningText = retryReasoning;
         retried = true;
       } catch (err) {
         logger.warn('空回复重试失败，使用兜底文案', err?.message || err);
@@ -784,6 +795,7 @@ async function generateOnce(opts, s) {
       thinking: useThinking,
       reason: usedReason,
       voiceReply,
+      reasoning: reasoningText,
     });
     return {
       ...out,
@@ -793,6 +805,7 @@ async function generateOnce(opts, s) {
       search: Boolean(search?.context),
       retried,
       fallback,
+      reasoning: reasoningText || null,
     };
   } catch (err) {
     logger.warn('对话生成失败', err?.message || err);
@@ -1260,8 +1273,68 @@ export function listChatMessages({ userId, characterId, before = null, limit = 5
   return mod({ userId, characterId, before, limit });
 }
 
-export function wakeCharacter({ userId, characterId, text = '', provider = null } = {}) {
-  return judgeWakeup({ userId, characterId, text, provider: provider || getChatProvider() });
+export const WAKE_FORCE_INSTRUCTION =
+  '系统提示：你被用户强行叫醒了，现在必须保持清醒。请带着刚醒来的状态（可以有一点困倦或小小抱怨）自然回应用户这句话。按正常被动回复 JSON 输出。';
+
+/**
+ * 强制叫醒（v1.2.0）：无论当前 sleep_state 如何，都置 awake → 刷新状态 → 生成一次回复（reason='wake'）。
+ * 模型/状态刷新失败也保持 awake，并返回可读提示。
+ * @returns {Promise<{ok:boolean, wakeup:1, state?:object, reply?:string|null, notice?:string, reason?:string, error?:string}>}
+ */
+export async function wakeCharacter({ userId, characterId, text = '', provider = null } = {}) {
+  const character = getCharacter(userId, characterId);
+  if (!character) return { ok: false, wakeup: 1, state: null, reply: null, reason: 'character_not_found' };
+  const prov = provider || getChatProvider();
+
+  updateState(characterId, { sleepState: 'awake' });
+  let refreshed = null;
+  try {
+    refreshed = await refreshStatus({ userId, characterId, provider: prov });
+  } catch (err) {
+    logger.warn('叫醒后刷新状态失败，保持 awake', err?.message || err);
+  }
+  // 模型刷新可能又判成睡眠：叫醒语义优先，强制覆盖为清醒
+  updateState(characterId, { sleepState: 'awake' });
+  const row = ensureState(characterId, userId);
+  const state = {
+    motion: row.motion || '',
+    psychology: row.psychology || '',
+    mood: row.mood || '',
+    health: row.health || '',
+    sleepState: 'awake',
+    updatedAt: row.updated_at || nowIso(),
+    ...(refreshed?.state
+      ? { motion: refreshed.state.motion || row.motion, psychology: refreshed.state.psychology || row.psychology, mood: refreshed.state.mood || row.mood, health: refreshed.state.health || row.health }
+      : {}),
+  };
+  broadcast(userId, { type: 'state', characterId, state });
+
+  let reply = null;
+  let error = null;
+  try {
+    const out = await runGeneration({
+      userId,
+      characterId,
+      reason: 'wake',
+      triggerText: String(text || '（用户把你叫醒了）'),
+      provider: prov,
+      extraInstruction: WAKE_FORCE_INSTRUCTION,
+      thinking: false,
+    });
+    if (out?.sent) reply = String(out.content || '').trim() || null;
+    else if (!out?.ok) error = out?.error || out?.reason || 'generation_failed';
+  } catch (err) {
+    logger.warn('叫醒回复生成失败', err?.message || err);
+    error = err?.message || 'generation_failed';
+  }
+
+  return {
+    ok: true,
+    wakeup: 1,
+    state,
+    reply,
+    ...(error ? { notice: '已经把你叫醒了，只是刚才没能说出话来，再和我说一句吧。', error } : {}),
+  };
 }
 
 export { compressConversation };

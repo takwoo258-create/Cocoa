@@ -53,7 +53,7 @@ class _AboutPageState extends State<AboutPage> {
       case 'min_version':
         return '当前版本低于最低支持版本${check.minVersion.isEmpty ? '' : ' ${check.minVersion}'}';
       case 'release':
-        return '该版本说明要求强制更新';
+        return '该版本说明要求更新';
       default:
         return '当前版本已不再受支持';
     }
@@ -93,7 +93,7 @@ class _AboutPageState extends State<AboutPage> {
                     Expanded(
                       child: Text(
                         forced
-                            ? '强制更新：v${latest.version}'
+                            ? '需要更新：v${latest.version}'
                             : hasUpdate
                                 ? '发现新版本 v${latest.version}'
                                 : check == null
@@ -133,7 +133,7 @@ class _AboutPageState extends State<AboutPage> {
                   if (forced) ...<Widget>[
                     const SizedBox(height: 6),
                     Text(
-                      '强制原因：${_forceReasonText(check)}'
+                      '需要更新的原因：${_forceReasonText(check)}'
                       '${check.minVersion.isNotEmpty ? ' · 最低版本 ${check.minVersion}' : ''}',
                       style: const TextStyle(
                         fontSize: 11,
@@ -142,10 +142,12 @@ class _AboutPageState extends State<AboutPage> {
                       ),
                     ),
                   ],
-                  if (latest.notesSummary.isNotEmpty) ...<Widget>[
+                  if (latest.formattedNotes.isNotEmpty) ...<Widget>[
                     const SizedBox(height: 6),
                     Text(
-                      latest.notesSummary,
+                      latest.formattedNotes,
+                      maxLines: 6,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 11,
                         height: 1.5,

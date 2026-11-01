@@ -3,9 +3,11 @@ import '../../core/layout.dart';
 
 import '../../core/app_state.dart';
 import '../../core/constants.dart';
+import '../../core/json_utils.dart';
 import '../../core/theme.dart';
 import '../../models/config_models.dart';
 import '../../widgets/service_editor.dart';
+import '../../widgets/voice_test_panel.dart';
 
 /// 服务配置二级页：v1.0.1 起 search/fetch 复用 DeepSeek，不再单列。
 class ServiceConfigPage extends StatelessWidget {
@@ -54,6 +56,8 @@ class ServiceConfigPage extends StatelessWidget {
             final ServiceConfig cfg =
                 state.config?.service(service) ?? ServiceConfig.empty;
             final bool ready = _ready(state, service);
+            final Map<String, dynamic> shared =
+                asMap(asMap(state.config?.shared)[service]);
             return Container(
               margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
               decoration: BoxDecoration(
@@ -80,24 +84,58 @@ class ServiceConfigPage extends StatelessWidget {
                     const Spacer(),
                     Flexible(
                       child: Text(
-                        cfg.model.isEmpty ? '未设置模型' : cfg.model,
+                        shared.isNotEmpty && !ready
+                            ? '来自分享'
+                            : (cfg.model.isEmpty ? '未设置模型' : cfg.model),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 10,
-                          color: AppColors.inkSoft,
+                          color: shared.isNotEmpty && !ready
+                              ? AppColors.rose
+                              : AppColors.inkSoft,
                         ),
                       ),
                     ),
                   ],
                 ),
                 children: <Widget>[
+                  if (shared.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.rose.withAlpha(18),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: AppColors.rose.withAlpha(80),
+                        ),
+                      ),
+                      child: Text(
+                        '共享来源：#${asInt(shared['ownerCode'])} '
+                        '${asString(shared['ownerNickname'])}'
+                        '${asString(shared['expiresAt']).isEmpty ? '' : ' · 到期 ${asString(shared['expiresAt'])}'}'
+                        '${asString(shared['model']).isEmpty ? '' : ' · 模型 ${asString(shared['model'])}'}'
+                        '${ready ? '' : '（未自行配置时自动使用）'}',
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          color: AppColors.cocoa,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                    child: ServiceEditor(
-                      state: state,
-                      service: service,
-                      showVoice: service == 'tts',
+                    child: Column(
+                      children: <Widget>[
+                        if (service == 'tts' || service == 'stt')
+                          VoiceTestPanel(service: service),
+                        ServiceEditor(
+                          state: state,
+                          service: service,
+                          showVoice: service == 'tts',
+                        ),
+                      ],
                     ),
                   ),
                 ],

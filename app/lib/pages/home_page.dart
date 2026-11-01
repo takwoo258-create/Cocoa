@@ -1,12 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
 import '../core/constants.dart';
 import '../core/global.dart';
 import '../core/layout.dart';
+import '../core/json_utils.dart';
 import '../core/native.dart';
 import '../core/theme.dart';
+import '../core/ws_service.dart';
+import '../models/model_share.dart';
 import '../models/version_info.dart';
+import '../widgets/share_pending_dialog.dart';
 import '../widgets/force_update_dialog.dart';
 import 'admin/admin_page.dart';
 import 'bookshelf_page.dart';
@@ -27,6 +33,8 @@ class _HomePageState extends State<HomePage>
   late final AnimationController _tabFade;
   final GlobalKey<CharacterListPageState> _charsKey =
       GlobalKey<CharacterListPageState>();
+  StreamSubscription<WsEvent>? _wsSub;
+  bool _shareDialogOpen = false;
 
   static const List<String> _titles = <String>['Cocoa', '书架', '统计', '设置'];
 
@@ -39,12 +47,17 @@ class _HomePageState extends State<HomePage>
       duration: const Duration(milliseconds: 220),
       value: 1,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) => _initVersion());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initVersion();
+      _initShares();
+      _listenWs();
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _wsSub?.cancel();
     _tabFade.dispose();
     super.dispose();
   }
@@ -62,6 +75,53 @@ class _HomePageState extends State<HomePage>
     await state.checkVersion();
     if (!mounted) return;
     _maybeShowForce(state);
+  }
+
+  void _listenWs() {
+    final AppState state = AppScope.read(context);
+    _wsSub = state.ws.events.listen((WsEvent event) {
+      switch (event.type) {
+        case 'share_request':
+          showToast('收到新的模型分享请求');
+          _initShares();
+          break;
+        case 'share_result':
+          final ModelShare share = ModelShare.fromJson(asMap(event.data['share']));
+          final bool accepted = share.status == 'accepted';
+          showToast(
+            share.direction == 'request'
+                ? (accepted ? '对方接受了你的索要' : '对方拒绝了你的索要')
+                : (accepted ? '对方接受了你的分享' : '对方拒绝了你的分享'),
+          );
+          break;
+        case 'share_expired':
+          final ModelShare share = ModelShare.fromJson(asMap(event.data['share']));
+          showToast(
+            '模型分享已到期：${share.services.isEmpty ? '' : share.services.join('、')}',
+          );
+          break;
+        case 'qq_binding':
+          showToast('QQ 接入角色已更新');
+          break;
+        default:
+          break;
+      }
+    });
+  }
+
+  Future<void> _initShares() async {
+    if (!mounted || _shareDialogOpen) return;
+    final AppState state = AppScope.read(context);
+    if (state.forceUpdateAvailable) return;
+    try {
+      final List<ModelShare> pending = await state.shareService.pending();
+      if (!mounted || pending.isEmpty) return;
+      _shareDialogOpen = true;
+      await showSharePendingDialog(context, shares: pending);
+      _shareDialogOpen = false;
+    } catch (_) {
+      _shareDialogOpen = false;
+    }
   }
 
   void _maybeShowForce(AppState state) {

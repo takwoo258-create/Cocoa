@@ -22,6 +22,24 @@ try {
   logger.error('调度器启动失败', err.message);
 }
 
+// v1.2.0 分享到期巡检
+try {
+  const { startShareExpiryWatcher } = await import('./services/shares.js');
+  startShareExpiryWatcher();
+} catch (err) {
+  logger.warn('分享到期巡检未就绪', err.message);
+}
+
+// v1.2.0 后端自动升级巡检（启动一次 + 每 6 小时）
+try {
+  const { maybeAutoUpgrade } = await import('./services/upgrade.js');
+  maybeAutoUpgrade().catch(() => {});
+  const timer = setInterval(() => maybeAutoUpgrade().catch(() => {}), 6 * 3600_000);
+  timer.unref?.();
+} catch (err) {
+  logger.warn('自动升级巡检未就绪', err.message);
+}
+
 // OneBot（NapCat）反向 WS：模块未就绪时不影响主服务
 try {
   const { attachOnebot } = await import('./onebot/server.js');
