@@ -6,7 +6,7 @@
 ## 客户端 · 新增
 
 + 平板横屏适配：宽屏下使用侧边导航，角色列表多列展示，聊天/设置/统计/记忆/管理端内容限宽居中，对话框最大宽度约束
-+ 强制推送更新：服务端可开启强制更新（管理端开关、最低版本或 Release 说明中的 `[force]` 标记），客户端检测到后弹出不可关闭的更新对话框，禁用「忽略此版本」，下载走 gh-proxy.com 加速
++ 强制推送更新：服务端可开启强制更新（管理端开关、最低版本或 Release 说明中的 `\[force\]` 标记），客户端检测到后弹出不可关闭的更新对话框，禁用「忽略此版本」，下载走 gh-proxy.com 加速
 
 ## 客户端 · 调整
 
@@ -17,6 +17,6 @@
 
 ## 服务端 · 新增与调整
 
-+ `GET /api/version/latest` 返回 `forceUpdate / forceReason / minVersion`；Release 说明包含 `[force]` 即强制更新
++ `GET /api/version/latest` 返回 `forceUpdate / forceReason / minVersion`；Release 说明包含 `\[force\]` 即强制更新
 + 管理端 `GET/PUT /api/admin/settings` 新增 `update:{force,minVersion}` 配置
 ± 服务端版本号提升至 1.1.0
