@@ -1,0 +1,31 @@
+# 依赖与构建产物
+node_modules/
+app/.dart_tool/
+app/build/
+app/.flutter-plugins*
+app/.packages
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+*.apk
+*.aab
+
+# 运行时数据与密钥（绝不能入库）
+data/
+server/data/
+.env
+.env.local
+.masterkey
+.admin-initial-password
+*.keystore
+*.jks
+deploy/backups/
+backups/
+
+# 日志与临时文件
+*.log
+.DS_Store
+.dsh/
+
+# 项目需求书含明文凭据（GitHub PAT / 服务器密码），永不入库
+build.md

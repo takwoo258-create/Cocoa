@@ -1,0 +1,73 @@
+# Cocoa 反向代理示例（可选）
+# 无域名时直接走 http://IP:8787，不需要本文件。
+# 有域名 + 证书后：
+#   cp nginx.conf.example /etc/nginx/conf.d/cocoa.conf
+#   nginx -t && systemctl reload nginx
+# 注意：WebSocket（/ws、/onebot/ws）必须保留 Upgrade 头，否则实时消息与 QQ 上报会失败。
+
+upstream cocoa_backend {
+    server 127.0.0.1:8787;
+    keepalive 16;
+}
+
+map $http_upgrade $cocoa_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name cocoa.example.com;
+    # 证书就绪后启用 301 跳转
+    # return 301 https://$host$request_uri;
+
+    client_max_body_size 32m;   # 图片/语音上传
+    proxy_read_timeout 120s;
+
+    location / {
+        proxy_pass http://cocoa_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $cocoa_connection_upgrade;
+        proxy_buffering off;
+    }
+
+    # 实时事件（SSE/WS 均由 hub 挂在 /ws）
+    location /ws {
+        proxy_pass http://cocoa_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $cocoa_connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+    }
+
+    # NapCat 反向 WS 上报
+    location /onebot/ {
+        proxy_pass http://cocoa_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $cocoa_connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+    }
+}
+
+# HTTPS（有证书后启用）
+# server {
+#     listen 443 ssl http2;
+#     server_name cocoa.example.com;
+#     ssl_certificate     /etc/letsencrypt/live/cocoa.example.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/cocoa.example.com/privkey.pem;
+#     ssl_protocols TLSv1.2 TLSv1.3;
+#     client_max_body_size 32m;
+#     location / { proxy_pass http://cocoa_backend; include proxy_params;
+#         proxy_http_version 1.1;
+#         proxy_set_header Upgrade $http_upgrade;
+#         proxy_set_header Connection $cocoa_connection_upgrade; }
+# }

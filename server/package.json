@@ -1,0 +1,8 @@
+{
+  "name": "@cocoa/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "license": "GPL-3.0-or-later"
+}

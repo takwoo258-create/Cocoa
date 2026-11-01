@@ -1,0 +1,45 @@
+[Unit]
+Description=Cocoa virtual agent companion backend
+Documentation=https://github.com/takwoo258-create/Cocoa
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cocoa
+Group=cocoa
+WorkingDirectory=/opt/cocoa
+EnvironmentFile=/opt/cocoa/.env
+# 目标机 1.7G 无 swap：限制 V8 堆，避免 OOM 拖垮同机的 1panel/NapCat
+Environment=NODE_OPTIONS=--max-old-space-size=512
+ExecStart=/usr/bin/node server/src/index.js
+Restart=always
+RestartSec=3
+# 首次启动最多 40 秒就绪
+TimeoutStartSec=40
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+# 资源与安全约束（与 NapCat/1panel 共存，不抢占其 CPU 与内存）
+Nice=5
+CPUWeight=80
+MemoryHigh=700M
+MemoryMax=900M
+MemorySwapMax=0
+OOMScoreAdjust=200
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/cocoa/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cocoa
+
+[Install]
+WantedBy=multi-user.target
