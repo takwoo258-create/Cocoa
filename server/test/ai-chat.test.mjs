@@ -461,16 +461,18 @@ test('chat: 文本消息落库加密、生成回复、分段任务与等待期',
   assert.equal(result.ok, true);
   assert.equal(result.sent, true);
 
-  const agent = lastAgentMessage(character.id);
-  assert.equal(agent.plain, '我在呢');
-  assert.equal(agent.meta.segment, 1);
-  assert.equal(agent.meta.segments, 2);
-
-  const segJobs = pendingJobs(character.id, 'segment_send');
-  assert.equal(segJobs.length, 1);
-  const payload = jobPayload(segJobs[0]);
-  assert.equal(payload.content, '怎么啦');
-  assert.equal(payload.wait, 2);
+  // v1.2.1：分段消息立即落库并推送，由客户端按 wait 排队显示
+  const agents = all("SELECT * FROM messages WHERE character_id = ? AND role = 'agent' ORDER BY created_at ASC", character.id);
+  assert.equal(agents.length, 2);
+  assert.equal(decryptText(userId, agents[0].content), '我在呢');
+  const meta0 = decryptJson(userId, agents[0].meta);
+  assert.equal(meta0.segment, 1);
+  assert.equal(meta0.segments, 2);
+  assert.equal(decryptText(userId, agents[1].content), '怎么啦');
+  const meta1 = decryptJson(userId, agents[1].meta);
+  assert.equal(meta1.segment, 2);
+  assert.equal(meta1.wait, 2);
+  assert.equal(pendingJobs(character.id, 'segment_send').length, 0);
 
   // 等待期：60-80 秒 + active_reply 任务
   const ws = active.getWaitState(userId, character.id);
@@ -479,13 +481,6 @@ test('chat: 文本消息落库加密、生成回复、分段任务与等待期',
   assert.ok(delay >= 59_000 && delay <= 81_000, `等待期应在 60-80s，实际 ${delay}ms`);
   assert.equal(pendingJobs(character.id, 'active_reply').length, 1);
 
-  // 分段任务到点发送
-  makeDue(character.id, 'segment_send');
-  const tick1 = await scheduler.tick({ sweep: false });
-  assert.ok(tick1.processed >= 1);
-  const segments = all("SELECT * FROM messages WHERE character_id = ? AND role = 'agent' ORDER BY created_at ASC", character.id);
-  assert.equal(segments.length, 2);
-  assert.equal(decryptText(userId, segments[1].content), '怎么啦');
 });
 
 test('chat: 语音消息先转写再并入用户消息，并合成语音回复', async () => {
@@ -675,11 +670,53 @@ test('chat: 空回复重试后仍为空 → 兜底消息落库（meta.reason=fal
   const out = await submitted.waitForReply;
   assert.equal(out.sent, true, '兜底消息必须落库并发送，不能静默丢弃');
   assert.equal(out.fallback, true);
-  assert.equal(mainCalls, 2, '空回复应只重试一次');
+  assert.equal(mainCalls, 3, '空回复应经历严格重试 + 纯文本兜底各一次');
 
   const agent = lastAgentMessage(character.id);
   assert.equal(agent.meta.reason, 'fallback');
-  assert.ok(agent.plain.includes('走神'), '应写入温和兜底文案');
+  assert.ok(agent.plain.includes('没听清') || agent.plain.includes('走神'), '应写入温和兜底文案');
+});
+
+test('chat: JSON 连续失败后纯文本兜底成功（v1.2.1）', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const seen = [];
+  const fake = fakeProvider({
+    main: async ({ opts }) => {
+      seen.push({ json: opts.json, maxTokens: opts.maxTokens });
+      if (seen.length <= 2) return { text: '', usage: { input: 5, output: 0 }, model: 'fake-empty', finishReason: 'length' };
+      return { text: '我在呢，刚刚在收拾杯子。', usage: { input: 5, output: 8 }, model: 'fake-plain' };
+    },
+  });
+  chat.setChatProvider(fake.provider);
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '在吗' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true);
+  assert.equal(out.fallback, false);
+  assert.equal(seen.length, 3);
+  assert.equal(seen[2].json, false, '第三次应为纯文本请求');
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.plain, '我在呢，刚刚在收拾杯子。');
+});
+
+test('chat: 单段长回复自动拆分为分段消息（v1.2.1）', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const text = '今天在花店忙了一整天，把新到的向日葵都摆好了。回来的时候路过你喜欢的那家面包店，顺手买了两个可颂。你今晚有空过来吗？';
+  const fake = fakeProvider({
+    main: async () => ({
+      text: JSON.stringify({ type: 'message', content: text, devide: 1 }),
+      usage: { input: 20, output: 20 },
+      model: 'fake-single',
+    }),
+  });
+  chat.setChatProvider(fake.provider);
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '你今天干嘛了' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true);
+  const agents = all("SELECT * FROM messages WHERE character_id = ? AND role = 'agent' ORDER BY created_at ASC", character.id);
+  assert.ok(agents.length >= 2, '长回复应自动分段');
+  const metas = agents.map((r) => decryptJson(userId, r.meta));
+  assert.equal(metas[0].segments, agents.length);
+  assert.ok(metas[1].wait >= 1);
 });
 
 test('chat: 空回复一次后严格重试成功，不触发兜底', { timeout: 20_000 }, async () => {

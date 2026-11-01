@@ -302,9 +302,9 @@ export async function preprocessMedia({ userId, characterId, kind = 'text', medi
 
 // ---------------- 消息落库 ----------------
 
-function persistMessage({ userId, characterId, conversationId, role, kind, content, meta, tokensIn = 0, tokensOut = 0 }) {
+function persistMessage({ userId, characterId, conversationId, role, kind, content, meta, tokensIn = 0, tokensOut = 0, createdAt = null }) {
   const id = `m_${uuid().replace(/-/g, '').slice(0, 16)}`;
-  const now = nowIso();
+  const now = createdAt || nowIso();
   run(
     'INSERT INTO messages(id, conversation_id, character_id, user_id, role, kind, content, meta, tokens_in, tokens_out, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
     id,
@@ -407,10 +407,10 @@ export function buildSystemPrompt({ character, state, summary = '', memory = '',
     userAddress ? `你对用户的称呼：${userAddress}（请自然使用，不要生硬重复）` : '',
     summary ? `你记得之前聊过的事：\n${summary}` : '',
     memory ? `你记得关于对方的这些细节：\n${memory}` : '',
-    '回复要求：口语化、简短、自然，像真人发消息；不要长篇大论、不要列清单、不要说教；通常一两句话就够。',
+    '回复要求：先理解用户最后一条消息，直接回应其内容；不要答非所问，不要复述人物设定/状态/记忆。口语化、简短、自然，像真人发消息；不要长篇大论、列清单或说教；通常一两句话就够。',
     '必须只输出一个 JSON 对象，不要输出 JSON 以外的任何文字（不要代码块标记）。格式：',
     '{"type":"message","content":"完整回复","devide":1,"agent":[{"content":"第一段","wait":0}]}',
-    '需要分段时：devide 为段数，agent 每段 {content, wait}，wait 为该段排队秒数（0-8 的整数）。只有你（智能体）的消息允许分段。',
+    '分段规则（重要）：如果回复自然包含两段以上内容、或需要停顿/连发，必须使用 agent 数组分段：devide 为段数，agent 每段 {content, wait}，wait 为该段排队秒数（1-3 的整数，第一段 0）；不要只输出 content。普通一句短回复才用单段。只有你（智能体）的消息允许分段。',
     '如果要主动发起话题而不是回应，使用：{"type":"subjective","content":"内容","sendsec":60}。',
     thinking ? '这次请先在心里认真思考再回答（可以反复推敲），但只输出最终 JSON，不要输出思考过程。' : '',
     segmentEnabled ? '' : '本次不要分段，只填 content 字段即可。',
@@ -512,6 +512,29 @@ async function afterAgentSent({ userId, characterId, conversation, state, reason
 }
 
 /** 智能体文字回复（含分段 jobs、可选 TTS 语音） */
+/** v1.2.1：模型只给单段 content 时，按句子自动拆成 2-3 段，保证分段能力可见 */
+export function autoSegmentParsed(parsed, segmentEnabled = true) {
+  if (!parsed || parsed.type !== 'message' || !segmentEnabled) return parsed;
+  const segs = Array.isArray(parsed.segments) ? parsed.segments.filter((x) => String(x?.content || '').trim()) : [];
+  if (segs.length > 1) return parsed;
+  const text = String(parsed.content || segs[0]?.content || '').trim();
+  if (text.length < 36) return parsed;
+  const parts = text.split(/(?<=[。！？!?…~～])\s*/).map((x) => x.trim()).filter(Boolean);
+  if (parts.length < 2) return parsed;
+  const target = Math.min(3, parts.length);
+  const per = Math.ceil(parts.length / target);
+  const groups = [];
+  for (let i = 0; i < parts.length; i += per) groups.push(parts.slice(i, i + per).join(''));
+  const limited = groups.slice(0, 3).filter(Boolean);
+  if (limited.length < 2) return parsed;
+  return {
+    ...parsed,
+    content: text,
+    segments: limited.map((content, idx) => ({ content, wait: idx === 0 ? 0 : Math.min(2, idx) })),
+    devide: limited.length,
+  };
+}
+
 async function sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '' }) {
   const segments = (parsed.segments || []).filter((s) => String(s.content || '').trim());
   if (!segments.length) return { ok: false, sent: false, reason: 'empty_reply' };
@@ -542,22 +565,30 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
   });
   broadcastMessage(userId, characterId, row);
 
-  let offset = 0;
+  // v1.2.1：分段一次性推送，客户端按每段 wait 依次显示。
+  // 旧实现用调度任务（30s 轮询）会严重延迟甚至丢段，导致“分段未实现”。
   for (let i = 1; i < segments.length; i++) {
-    offset += clamp(segments[i].wait || 0, 0, 8);
-    enqueue(
-      'segment_send',
-      new Date(Date.now() + offset * 1000).toISOString(),
-      {
-        conversationId: conversation.id,
-        content: segments[i].content,
-        segment: i + 1,
-        segments: segments.length,
-        wait: segments[i].wait || 0,
-      },
-      { userId, characterId },
-    );
+    const segmentMeta = {
+      segment: i + 1,
+      segments: segments.length,
+      wait: clamp(segments[i].wait || 0, 0, 8),
+      thinkingMode: Boolean(thinking),
+      reason,
+    };
+    const segRow = persistMessage({
+      userId,
+      characterId,
+      conversationId: conversation.id,
+      role: 'agent',
+      kind: 'text',
+      content: segments[i].content,
+      meta: segmentMeta,
+      tokensOut: estimateTextTokens(segments[i].content),
+      createdAt: new Date(Date.now() + i * 2).toISOString(),
+    });
+    broadcastMessage(userId, characterId, segRow);
   }
+  refreshConversationUsage(conversation.id);
 
   const after = await afterAgentSent({ userId, characterId, conversation, state, reason });
   return {
@@ -614,7 +645,12 @@ export const STRICT_REPLY_INSTRUCTION = [
   '不要输出思考过程、不要输出空字符串、不要使用代码块或额外解释。',
 ].join('\n');
 
-export const FALLBACK_REPLY_TEXT = '我刚才有点走神，没接住你的话……可以再说一遍吗？';
+export const FALLBACK_REPLY_TEXT = '我在听，刚刚没听清，你再说一遍好吗？';
+export const PLAIN_REPLY_INSTRUCTION = '忽略上一条消息里的 JSON 格式要求。现在直接用角色口吻回复用户最后一条消息，1-3 句口语化中文；不要输出 JSON、Markdown、代码块、括号说明或任何解释。';
+
+function stripCodeFence(text = '') {
+  return String(text).replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
+}
 
 /** 该解析结果是否可以真正发给用户 */
 export function replyIsUsable(parsed, reason = 'user_message') {
@@ -764,6 +800,47 @@ async function generateOnce(opts, s) {
       }
     }
 
+    // 二次兜底：部分模型无法稳定输出 JSON，改用纯文本口吻再请求一次
+    if (replyNeedsRetry(res, parsed, reason)) {
+      try {
+        const plainRes = await prov.chatText(userId, {
+          task: 'main',
+          messages: [...messages, { role: 'system', content: PLAIN_REPLY_INSTRUCTION }],
+          temperature: 0.8,
+          maxTokens: 900,
+          thinking: false,
+          json: false,
+        });
+        recordUsage({ userId, characterId, kind: 'main', model: plainRes?.model, usage: plainRes?.usage || {}, cost: plainRes?.cost });
+        const plainText = stripCodeFence(plainRes?.text || '');
+        let plainParsed = parseReply(plainText, { segmentEnabled: false });
+        if (!replyIsUsable(plainParsed, reason) && plainText && !/^[{[]/.test(plainText)) {
+          plainParsed = {
+            type: 'message',
+            content: plainText,
+            segments: [{ content: plainText, wait: 0 }],
+            devide: 1,
+            wait: 0,
+            parsed: false,
+            fallback: false,
+          };
+        }
+        if (replyIsUsable(plainParsed, reason)) {
+          res = plainRes;
+          parsed = plainParsed;
+          retried = true;
+          const rescueReasoning = String(plainRes?.reasoning || '').trim();
+          if (rescueReasoning) reasoningText = rescueReasoning;
+          logger.info('JSON 回复不可用，已用纯文本回复兜底', {
+            reason,
+            textLength: String(plainText).length,
+          });
+        }
+      } catch (err) {
+        logger.warn('纯文本兜底请求失败', err?.message || err);
+      }
+    }
+
     let usedReason = reason;
     let fallback = false;
     if (replyNeedsRetry(res, parsed, reason)) {
@@ -786,6 +863,7 @@ async function generateOnce(opts, s) {
       };
     }
 
+    parsed = autoSegmentParsed(parsed, segmentEnabled);
     const out = await handleParsedReply({
       userId,
       characterId,

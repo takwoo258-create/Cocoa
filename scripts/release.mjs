@@ -4,9 +4,9 @@
  *
  * 令牌：/tmp/gh_token（0600）或环境变量 GITHUB_TOKEN；本脚本不打印令牌。
  * 用法：
- *   node scripts/release.mjs                         # 默认 v1.2.0 + /data/dsh/home/Cocoa-v1.2.0.apk
- *   node scripts/release.mjs --tag v1.2.0 --apk /path/x.apk --notes update1.2.0.md \
- *     --extra /data/dsh/home/Cocoa-backend-v1.2.0.zip    # 额外资产可重复多次
+ *   node scripts/release.mjs                         # 默认 v1.2.1 + /data/dsh/home/Cocoa-v1.2.1.apk
+ *   node scripts/release.mjs --tag v1.2.1 --apk /path/x.apk --notes update1.2.1.md \
+ *     --extra /data/dsh/home/Cocoa-backend-v1.2.1.zip    # 额外资产可重复多次
  *   node scripts/release.mjs --dry                   # 只打印将要执行的动作
  */
 import fs from 'node:fs';
@@ -18,8 +18,8 @@ const argOf = (n, d) => {
   return i >= 0 ? args[i + 1] : d;
 };
 const REPO = process.env.GITHUB_REPO || 'takwoo258-create/Cocoa';
-const TAG = argOf('--tag', 'v1.2.0');
-const APK = argOf('--apk', '/data/dsh/home/Cocoa-v1.2.0.apk');
+const TAG = argOf('--tag', 'v1.2.1');
+const APK = argOf('--apk', '/data/dsh/home/Cocoa-v1.2.1.apk');
 const NOTES = argOf('--notes', '');
 const BRANCH = argOf('--target', 'main');
 const DRY = args.includes('--dry');

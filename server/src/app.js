@@ -46,7 +46,7 @@ export function createApp() {
     res.json({
       ok: true,
       name: 'cocoa',
-      version: '1.2.0',
+      version: '1.2.1',
       time: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
     });
