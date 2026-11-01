@@ -11,7 +11,11 @@ const CACHE_MS = 10 * 60_000;
 
 // Release 说明中出现 [force] / [force-update] / <!-- cocoa:force --> 即视为强制更新
 export function releaseForcesUpdate(notes = '') {
-  return /\[force(-update)?\]|<!--\s*cocoa:force\s*-->|\[强制更新\]/i.test(String(notes || ''));
+  // 先剔除 ``` 代码块与 `行内代码`，避免文档里「描述标记」被误判为强制更新
+  const text = String(notes || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ');
+  return /\[force(-update)?\]|<!--\s*cocoa:force\s*-->|\[强制更新\]/i.test(text);
 }
 let memoryCache = { at: 0, data: null };
 
