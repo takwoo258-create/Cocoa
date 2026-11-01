@@ -44,7 +44,7 @@ async function api(tk, method, url, body) {
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'cocoa-release-script',
-      ...(body && !Buffer.isBuffer(body) ? { 'Content-Type': 'application/json' } : {}),
+      ...(body ? { 'Content-Type': Buffer.isBuffer(body) ? 'application/vnd.android.package-archive' : 'application/json' } : {}),
     },
     body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body),
   });
@@ -104,6 +104,7 @@ async function main() {
   const up = await api(tk, 'POST',
     `https://uploads.github.com/repos/${REPO}/releases/${release.id}/assets?name=${encodeURIComponent(apkName)}`,
     buf);
+  if (up.status !== 201) die(`上传失败（${up.status}）：${JSON.stringify(up.data).slice(0, 300)}`);
   if (up.status !== 201) die(`上传失败（${up.status}）：${JSON.stringify(up.data).slice(0, 300)}`);
   log(`上传完成：${up.data.browser_download_url}（${(up.data.size / 1024 / 1024).toFixed(2)} MB）`);
 
