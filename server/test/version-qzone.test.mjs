@@ -74,6 +74,8 @@ test('强制更新：Release 说明标记解析', async () => {
   assert.equal(releaseForcesUpdate('普通更新'), false);
   assert.equal(releaseForcesUpdate('重要 [force] 请立刻更新'), true);
   assert.equal(releaseForcesUpdate('<!-- cocoa:force -->'), true);
+  assert.equal(releaseForcesUpdate('本版支持强制更新能力，但不强制'), false);
+  assert.equal(releaseForcesUpdate('[强制更新] 最低 1.1.0'), true);
 });
 
 test('强制更新：管理端 update.force 生效', async () => {
