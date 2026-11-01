@@ -5,6 +5,7 @@ import '../core/api_client.dart';
 import '../core/constants.dart';
 import '../core/app_state.dart';
 import '../core/global.dart';
+import '../core/layout.dart';
 import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
@@ -518,28 +519,31 @@ class _BookshelfPageState extends State<BookshelfPage>
         icon: Icons.person_outline,
       );
     }
-    return Column(
-      children: <Widget>[
-        _characterBar(),
-        TabBar(
-          controller: _tab,
-          isScrollable: false,
-          tabs: _types
-              .map((String t) => Tab(text: kBookTypeLabels[t]))
-              .toList(),
-        ),
-        Expanded(
-          child: TabBarView(
+    return ContentFrame(
+      maxWidth: 760,
+      child: Column(
+        children: <Widget>[
+          _characterBar(),
+          TabBar(
             controller: _tab,
-            children: <Widget>[
-              _bookList('novel'),
-              _bookList('essay'),
-              _diaryTab(),
-              _bookList('news'),
-            ],
+            isScrollable: false,
+            tabs: _types
+                .map((String t) => Tab(text: kBookTypeLabels[t]))
+                .toList(),
           ),
-        ),
-      ],
+          Expanded(
+            child: TabBarView(
+              controller: _tab,
+              children: <Widget>[
+                _bookList('novel'),
+                _bookList('essay'),
+                _diaryTab(),
+                _bookList('news'),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -75,9 +75,13 @@ class AppState extends ChangeNotifier {
   int get softTokens => asInt(asMap(preferences['limits'])['softTokens']);
   bool get limitsEnabled => asBool(asMap(preferences['limits'])['enabled'], true);
 
+  /// v1.1.0：强制更新优先，忽略版本不能绕过。
+  bool get forceUpdateAvailable => versionCheck?.forceUpdate ?? false;
+
   bool get updateAvailable {
     final VersionCheckResult? r = versionCheck;
     if (r == null || !r.updateAvailable) return false;
+    if (r.forceUpdate) return false;
     final String tag = r.latest.tag;
     return tag.isEmpty || tag != ignoredVersionTag;
   }
@@ -129,15 +133,27 @@ class AppState extends ChangeNotifier {
     checkVersion();
   }
 
-  /// GET /api/version/latest?current=1.0.1。
-  Future<void> checkVersion({bool force = false}) async {
-    if (versionChecking) return;
+  Future<void>? _versionCheckFuture;
+
+  /// GET /api/version/latest?current=1.1.0。
+  /// 并发调用共享同一个 Future，便于主页等待启动时的检查结果。
+  Future<void> checkVersion({bool force = false}) {
+    final Future<void>? inFlight = _versionCheckFuture;
+    if (inFlight != null) return inFlight;
     final DateTime now = DateTime.now();
     if (!force &&
         _lastVersionCheckAt != null &&
         now.difference(_lastVersionCheckAt!) < const Duration(minutes: 10)) {
-      return;
+      return Future<void>.value();
     }
+    final Future<void> future = _runVersionCheck();
+    _versionCheckFuture = future;
+    return future.whenComplete(() {
+      _versionCheckFuture = null;
+    });
+  }
+
+  Future<void> _runVersionCheck() async {
     versionChecking = true;
     notifyListeners();
     try {

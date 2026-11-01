@@ -19,19 +19,22 @@ const { hash, salt } = hashPassword('Passw0rd!');
 run("INSERT INTO users(id,username,email,password_hash,password_salt,created_at) VALUES(?,?,?,?,?,?)",
   'u_v101', 'v101', 'v101@test.local', hash, salt, now);
 const token = signToken({ uid: 'u_v101', role: 'user' });
+run("UPDATE users SET role = 'admin' WHERE id = ?", 'u_v101');
+const adminToken = signToken({ uid: 'u_v101', role: 'admin' });
 run('INSERT INTO auth_tokens(token_hash,user_id,created_at,expires_at) VALUES(?,?,?,?)', sha256(token), 'u_v101', now, new Date(Date.now()+86400000).toISOString());
+run('INSERT INTO auth_tokens(token_hash,user_id,created_at,expires_at) VALUES(?,?,?,?)', sha256(adminToken), 'u_v101', now, new Date(Date.now()+86400000).toISOString());
 
 const app = createApp();
 const server = app.listen(0);
 await new Promise((r) => server.once('listening', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-async function api(pathname, { method = 'GET', body, auth = true } = {}) {
+async function api(pathname, { method = 'GET', body, auth = true, tokenOverride = null } = {}) {
   const res = await fetch(base + pathname, {
     method,
     headers: {
       ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(auth ? { authorization: `Bearer ${token}` } : {}),
+      ...(auth ? { authorization: `Bearer ${tokenOverride || token}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -64,6 +67,32 @@ test('版本检查：返回结构完整（GitHub 不可用时也不 5xx）', asy
     assert.ok(r.json.latest.version);
     if (r.json.latest.apk) assert.match(r.json.latest.apk.url, /^https:\/\//);
   }
+});
+
+test('强制更新：Release 说明标记解析', async () => {
+  const { releaseForcesUpdate } = await import('../src/routes/version.js');
+  assert.equal(releaseForcesUpdate('普通更新'), false);
+  assert.equal(releaseForcesUpdate('重要 [force] 请立刻更新'), true);
+  assert.equal(releaseForcesUpdate('<!-- cocoa:force -->'), true);
+});
+
+test('强制更新：管理端 update.force 生效', async () => {
+  const save = await api('/api/admin/settings', {
+    method: 'PUT', tokenOverride: adminToken,
+    body: { update: { force: true, minVersion: '1.1.0' } },
+  });
+  assert.equal(save.status, 200, JSON.stringify(save.json));
+  assert.equal(save.json.update.force, true);
+  assert.equal(save.json.update.minVersion, '1.1.0');
+
+  const check = await api('/api/version/latest?current=1.0.1', { auth: false });
+  assert.equal(check.status, 200);
+  if (check.json.updateAvailable) {
+    assert.equal(check.json.forceUpdate, true);
+    assert.equal(check.json.forceReason, 'admin');
+  }
+  const cfg = await api('/api/admin/settings', { tokenOverride: adminToken });
+  assert.equal(cfg.json.update.force, true);
 });
 
 test.after(() => {

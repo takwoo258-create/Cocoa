@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/layout.dart';
 
 import '../../core/app_state.dart';
 import '../../core/constants.dart';
@@ -44,16 +45,31 @@ class _AboutPageState extends State<AboutPage> {
     }
   }
 
+  String _forceReasonText(VersionCheckResult? check) {
+    if (check == null) return '当前版本已不再受支持';
+    switch (check.forceReason) {
+      case 'admin':
+        return '管理员已将该版本设为必须更新';
+      case 'min_version':
+        return '当前版本低于最低支持版本${check.minVersion.isEmpty ? '' : ' ${check.minVersion}'}';
+      case 'release':
+        return '该版本说明要求强制更新';
+      default:
+        return '当前版本已不再受支持';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final AppState state = AppScope.of(context);
     final VersionCheckResult? check = state.versionCheck;
     final LatestVersion latest = check?.latest ?? LatestVersion.empty;
-    final bool hasUpdate = state.updateAvailable;
+    final bool forced = state.forceUpdateAvailable;
+    final bool hasUpdate = forced || state.updateAvailable;
     return Scaffold(
       appBar: AppBar(title: const Text('关于与版本')),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: pagePadding(context),
         children: <Widget>[
           SectionCard(
             title: '版本',
@@ -76,13 +92,15 @@ class _AboutPageState extends State<AboutPage> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        hasUpdate
-                            ? '发现新版本 v${latest.version}'
-                            : (check == null
-                                ? '尚未检查更新'
-                                : (!check.ok && latest.version.isEmpty
-                                    ? '版本信息暂不可用'
-                                    : '已是最新版本')),
+                        forced
+                            ? '强制更新：v${latest.version}'
+                            : hasUpdate
+                                ? '发现新版本 v${latest.version}'
+                                : check == null
+                                    ? '尚未检查更新'
+                                    : (!check.ok && latest.version.isEmpty
+                                        ? '版本信息暂不可用'
+                                        : '已是最新版本'),
                         style: const TextStyle(fontSize: 12.5),
                       ),
                     ),
@@ -112,6 +130,18 @@ class _AboutPageState extends State<AboutPage> {
                       color: AppColors.inkSoft,
                     ),
                   ),
+                  if (forced) ...<Widget>[
+                    const SizedBox(height: 6),
+                    Text(
+                      '强制原因：${_forceReasonText(check)}'
+                      '${check.minVersion.isNotEmpty ? ' · 最低版本 ${check.minVersion}' : ''}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.danger,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
                   if (latest.notesSummary.isNotEmpty) ...<Widget>[
                     const SizedBox(height: 6),
                     Text(
@@ -136,11 +166,13 @@ class _AboutPageState extends State<AboutPage> {
                           ),
                           child: const Text('下载安装包'),
                         ),
-                        const SizedBox(width: 10),
-                        TextButton(
-                          onPressed: () => state.ignoreVersion(latest.tag),
-                          child: const Text('忽略此版本'),
-                        ),
+                        if (!forced) ...<Widget>[
+                          const SizedBox(width: 10),
+                          TextButton(
+                            onPressed: () => state.ignoreVersion(latest.tag),
+                            child: const Text('忽略此版本'),
+                          ),
+                        ],
                       ],
                     ),
                   ],

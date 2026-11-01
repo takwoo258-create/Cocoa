@@ -2,7 +2,7 @@
 # Cocoa Android 客户端构建（本机构建机执行，不要在服务器上跑）
 # 用法：bash scripts/build-apk.sh [--debug] [--skip-analyze]
 # 产物：app/build/app/outputs/flutter-apk/app-release.apk
-#       → 复制到 /data/dsh/home/Cocoa-v1.0.1.apk（/tmp 仅 256M 且 noexec，勿作最终存放点）
+#       → 复制到 /data/dsh/home/Cocoa-v1.1.0.apk（/tmp 仅 256M 且 noexec，勿作最终存放点）
 # 签名：$COCOA_SIGN_DIR（默认 /data/dsh/home/.cocoa-sign）下的 cocoa-release.jks + key.properties，均不入库
 set -Eeuo pipefail
 
@@ -20,7 +20,7 @@ for arg in "$@"; do
 done
 
 APP_DIR="$ROOT/app"
-OUT_NAME="${COCOA_APK_NAME:-Cocoa-v1.0.1.apk}"
+OUT_NAME="${COCOA_APK_NAME:-Cocoa-v1.1.0.apk}"
 OUT_DIR="${COCOA_OUT_DIR:-/data/dsh/home}"
 SIGN_DIR="${COCOA_SIGN_DIR:-/data/dsh/home/.cocoa-sign}"
 STOREPASS_FILE="$SIGN_DIR/storepass.txt"

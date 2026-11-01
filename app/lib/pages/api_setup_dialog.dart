@@ -108,7 +108,7 @@ class _ApiSetupDialogState extends State<ApiSetupDialog> {
       child: Dialog(
         insetPadding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
         child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: 520, maxHeight: maxHeight),
+            constraints: BoxConstraints(maxWidth: 560, maxHeight: maxHeight),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[

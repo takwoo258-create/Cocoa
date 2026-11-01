@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/layout.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_state.dart';
@@ -73,7 +74,7 @@ class _CharacterConfigPageState extends State<CharacterConfigPage> {
                   icon: Icons.favorite_border,
                 )
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
+                  padding: pagePadding(context, top: 8, bottom: 20),
                   children: <Widget>[
                     const Padding(
                       padding: EdgeInsets.fromLTRB(4, 0, 4, 8),

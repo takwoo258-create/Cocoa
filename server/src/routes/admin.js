@@ -447,9 +447,11 @@ export default function register() {
   r.get('/settings', (req, res) => {
     const smtp = getSmtpConfig();
     const onebot = getOnebotConfig();
+    const update = getAdminSetting('update', {}) || {};
     res.json({
       smtp: maskedSmtp(),
       onebot: maskedOnebot(),
+      update: { force: Boolean(update.force), minVersion: String(update.minVersion || '') },
       ready: {
         smtp: Boolean(smtp.host && smtp.user),
         onebot: Boolean(onebot.token || onebot.selfId),
@@ -470,6 +472,20 @@ export default function register() {
         changed.push('smtp');
       }
     }
+    if (body.update && typeof body.update === 'object') {
+      submitted.push('update');
+      const patch = {};
+      if (body.update.force !== undefined) patch.force = Boolean(body.update.force);
+      if (body.update.minVersion !== undefined) {
+        const v = String(body.update.minVersion || '').trim();
+        if (v && !/^\d+\.\d+\.\d+/.test(v)) throw badRequest('minVersion 需为 x.y.z 格式', 'min_version_invalid');
+        patch.minVersion = v;
+      }
+      if (Object.keys(patch).length) {
+        setAdminSetting('update', mergeDeep(getAdminSetting('update', {}) || {}, patch));
+        changed.push('update');
+      }
+    }
     if (body.onebot && typeof body.onebot === 'object') {
       submitted.push('onebot');
       const patch = sanitizeOnebot(body.onebot);
@@ -487,6 +503,7 @@ export default function register() {
       changed,
       smtp: maskedSmtp(),
       onebot: maskedOnebot(),
+      update: (() => { const u = getAdminSetting('update', {}) || {}; return { force: Boolean(u.force), minVersion: String(u.minVersion || '') }; })(),
     });
   });
 

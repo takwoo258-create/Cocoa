@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/layout.dart';
 
 import '../core/json_utils.dart';
 import '../core/theme.dart';
@@ -45,7 +46,7 @@ class ReaderPage extends StatelessWidget {
         ],
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(22, 18, 22, 40),
+        padding: pagePadding(context, top: 18, bottom: 40, side: 22),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[

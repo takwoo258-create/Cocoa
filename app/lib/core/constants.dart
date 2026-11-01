@@ -2,7 +2,7 @@
 library cocoa.core.constants;
 
 const String kAppName = 'Cocoa';
-const String kAppVersion = '1.0.1';
+const String kAppVersion = '1.1.0';
 
 /// 默认服务地址（可在设置页修改）。
 const String kDefaultBaseUrl = 'http://120.26.204.70:8787';

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/api_client.dart';
 import '../core/app_state.dart';
 import '../core/global.dart';
+import '../core/layout.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
 import '../models/character.dart';
@@ -207,24 +208,52 @@ class CharacterListPageState extends State<CharacterListPage> {
         ),
       );
     }
-    return RefreshIndicator(
-      onRefresh: () => _load(showLoading: false),
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
-        itemCount: _characters.length + 1,
-        itemBuilder: (BuildContext context, int i) {
-          if (i == 0) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8, left: 2),
-              child: Text(
-                '${greeting()}，${state.user?.username ?? ''} · 共 ${_characters.length} 位角色',
-                style: const TextStyle(fontSize: 12, color: AppColors.inkSoft),
-              ),
+    final Widget header = Padding(
+      padding: const EdgeInsets.only(bottom: 8, left: 2),
+      child: Text(
+        '${greeting()}，${state.user?.username ?? ''} · 共 ${_characters.length} 位角色',
+        style: const TextStyle(fontSize: 12, color: AppColors.inkSoft),
+      ),
+    );
+    final int cols = responsiveColumns(context);
+    return ContentFrame(
+      maxWidth: 1200,
+      child: RefreshIndicator(
+        onRefresh: () => _load(showLoading: false),
+        child: LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints c) {
+            if (cols <= 1) {
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
+                itemCount: _characters.length + 1,
+                itemBuilder: (BuildContext context, int i) {
+                  if (i == 0) return header;
+                  return _card(_characters[i - 1]);
+                },
+              );
+            }
+            final double itemWidth =
+                (c.maxWidth - 24 - (cols - 1) * 12) / cols;
+            return ListView(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
+              children: <Widget>[
+                header,
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: _characters
+                      .map(
+                        (Character ch) => SizedBox(
+                          width: itemWidth,
+                          child: _card(ch),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
             );
-          }
-          final Character c = _characters[i - 1];
-          return _card(c);
-        },
+          },
+        ),
       ),
     );
   }

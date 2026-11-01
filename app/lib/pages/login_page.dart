@@ -390,8 +390,11 @@ class _LoginPageState extends State<LoginPage> {
         child: SafeArea(
           child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(22, 28, 22, 24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
                 Center(
                   child: Container(
@@ -505,7 +508,9 @@ class _LoginPageState extends State<LoginPage> {
                     style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
                   ),
                 ),
-              ],
+                  ],
+                ),
+              ),
             ),
           ),
         ),

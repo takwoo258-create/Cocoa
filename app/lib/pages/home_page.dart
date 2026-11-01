@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import '../core/app_state.dart';
 import '../core/constants.dart';
 import '../core/global.dart';
+import '../core/layout.dart';
 import '../core/native.dart';
 import '../core/theme.dart';
 import '../models/version_info.dart';
+import '../widgets/force_update_dialog.dart';
 import 'admin/admin_page.dart';
 import 'bookshelf_page.dart';
 import 'character_list_page.dart';
@@ -20,30 +22,57 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   int _index = 0;
   late final AnimationController _tabFade;
   final GlobalKey<CharacterListPageState> _charsKey =
       GlobalKey<CharacterListPageState>();
 
+  static const List<String> _titles = <String>['Cocoa', '书架', '统计', '设置'];
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tabFade = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 220),
       value: 1,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      AppScope.read(context).checkVersion();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _initVersion());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tabFade.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    // 回到前台时重新检查更新（checkVersion 自带 10 分钟节流）。
+    _initVersion();
+  }
+
+  Future<void> _initVersion() async {
+    if (!mounted) return;
+    final AppState state = AppScope.read(context);
+    await state.checkVersion();
+    if (!mounted) return;
+    _maybeShowForce(state);
+  }
+
+  void _maybeShowForce(AppState state) {
+    final VersionCheckResult? check = state.versionCheck;
+    if (check == null || !state.forceUpdateAvailable) return;
+    ForceUpdateDialog.show(
+      context,
+      latest: check.latest,
+      reason: check.forceReason,
+      minVersion: check.minVersion,
+    );
   }
 
   void _selectTab(int index) {
@@ -164,6 +193,52 @@ class _HomePageState extends State<HomePage>
     );
   }
 
+  List<Widget> _appBarActions(AppState state) {
+    return <Widget>[
+      if (state.isAdmin && _index == 0)
+        IconButton(
+          tooltip: '管理端',
+          icon: const Icon(Icons.shield_outlined, size: 20),
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const AdminPage()),
+            );
+          },
+        ),
+      if (_index == 0)
+        IconButton(
+          tooltip: '刷新角色',
+          icon: const Icon(Icons.refresh, size: 20),
+          onPressed: () => _charsKey.currentState?.reload(),
+        ),
+      if (_index == 0)
+        IconButton(
+          tooltip: '创建角色',
+          icon: const Icon(Icons.add_circle_outline, size: 21),
+          onPressed: () async {
+            await _charsKey.currentState?.createCharacter();
+          },
+        ),
+    ];
+  }
+
+  Widget _content(AppState state, List<Widget> pages) {
+    return Column(
+      children: <Widget>[
+        _versionBanner(state),
+        Expanded(
+          child: FadeTransition(
+            opacity: CurvedAnimation(
+              parent: _tabFade,
+              curve: Curves.easeOut,
+            ),
+            child: IndexedStack(index: _index, children: pages),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final AppState state = AppScope.of(context);
@@ -174,6 +249,8 @@ class _HomePageState extends State<HomePage>
       const SettingsPage(),
     ];
     if (_index >= pages.length) _index = 0;
+    final bool useRail = Breakpoints.isTablet(context);
+    final Widget body = _content(state, pages);
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -182,80 +259,82 @@ class _HomePageState extends State<HomePage>
             const Icon(Icons.coffee, size: 18, color: AppColors.cocoa),
             const SizedBox(width: 6),
             Text(
-              _index == 0
-                  ? 'Cocoa'
-                  : <String>['Cocoa', '书架', '统计', '设置'][_index],
+              _titles[_index],
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ],
         ),
-        actions: <Widget>[
-          if (state.isAdmin && _index == 0)
-            IconButton(
-              tooltip: '管理端',
-              icon: const Icon(Icons.shield_outlined, size: 20),
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(builder: (_) => const AdminPage()),
-                );
-              },
-            ),
-          if (_index == 0)
-            IconButton(
-              tooltip: '刷新角色',
-              icon: const Icon(Icons.refresh, size: 20),
-              onPressed: () => _charsKey.currentState?.reload(),
-            ),
-          if (_index == 0)
-            IconButton(
-              tooltip: '创建角色',
-              icon: const Icon(Icons.add_circle_outline, size: 21),
-              onPressed: () async {
-                await _charsKey.currentState?.createCharacter();
-              },
-            ),
-        ],
+        actions: _appBarActions(state),
       ),
-      body: Column(
-        children: <Widget>[
-          _versionBanner(state),
-          Expanded(
-            child: FadeTransition(
-              opacity: CurvedAnimation(
-                parent: _tabFade,
-                curve: Curves.easeOut,
-              ),
-              child: IndexedStack(index: _index, children: pages),
+      body: useRail
+          ? Row(
+              children: <Widget>[
+                NavigationRail(
+                  selectedIndex: _index,
+                  onDestinationSelected: _selectTab,
+                  labelType: NavigationRailLabelType.all,
+                  backgroundColor: AppColors.white,
+                  indicatorColor: AppColors.sand,
+                  leading: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 10),
+                    child: Icon(Icons.coffee, color: AppColors.cocoa, size: 24),
+                  ),
+                  destinations: const <NavigationRailDestination>[
+                    NavigationRailDestination(
+                      icon: Icon(Icons.favorite_border),
+                      selectedIcon: Icon(Icons.favorite),
+                      label: Text('角色'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(Icons.menu_book_outlined),
+                      selectedIcon: Icon(Icons.menu_book),
+                      label: Text('书架'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(Icons.insights_outlined),
+                      selectedIcon: Icon(Icons.insights),
+                      label: Text('统计'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(Icons.settings_outlined),
+                      selectedIcon: Icon(Icons.settings),
+                      label: Text('设置'),
+                    ),
+                  ],
+                ),
+                const VerticalDivider(width: 1, color: AppColors.sand),
+                Expanded(child: body),
+              ],
+            )
+          : body,
+      bottomNavigationBar: useRail
+          ? null
+          : NavigationBar(
+              selectedIndex: _index,
+              onDestinationSelected: _selectTab,
+              destinations: const <NavigationDestination>[
+                NavigationDestination(
+                  icon: Icon(Icons.favorite_border),
+                  selectedIcon: Icon(Icons.favorite),
+                  label: '角色',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.menu_book_outlined),
+                  selectedIcon: Icon(Icons.menu_book),
+                  label: '书架',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.insights_outlined),
+                  selectedIcon: Icon(Icons.insights),
+                  label: '统计',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.settings_outlined),
+                  selectedIcon: Icon(Icons.settings),
+                  label: '设置',
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: _selectTab,
-        destinations: const <NavigationDestination>[
-          NavigationDestination(
-            icon: Icon(Icons.favorite_border),
-            selectedIcon: Icon(Icons.favorite),
-            label: '角色',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.menu_book_outlined),
-            selectedIcon: Icon(Icons.menu_book),
-            label: '书架',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.insights_outlined),
-            selectedIcon: Icon(Icons.insights),
-            label: '统计',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: '设置',
-          ),
-        ],
-      ),
     );
   }
 }

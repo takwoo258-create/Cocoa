@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../core/api_client.dart';
 import '../core/app_state.dart';
 import '../core/theme.dart';
+import '../core/layout.dart';
 import '../core/utils.dart';
 import '../models/character.dart';
 import '../models/memory_graph.dart';
@@ -158,11 +159,12 @@ class _MemoryPageState extends State<MemoryPage> {
   List<MemoryNode> _allMemories() =>
       _graph.nodes.where((MemoryNode n) => n.isMemory).toList();
 
+  MemoryNode? _detailNode;
+  List<MemoryNode> _detailRelated = <MemoryNode>[];
+
   Future<void> _onTapNode(MemoryNode node, Offset local) async {
     if (node.isMemory) {
-      setState(() => _selectedId = node.id);
-      await _showDetail(node);
-      if (mounted) setState(() => _selectedId = null);
+      await _selectMemory(node);
       return;
     }
     setState(() {
@@ -178,126 +180,167 @@ class _MemoryPageState extends State<MemoryPage> {
     });
   }
 
-  Future<void> _showDetail(MemoryNode node) async {
+  /// 宽屏左右分栏，窄屏底部面板。
+  Future<void> _selectMemory(MemoryNode node) async {
     final AppState state = AppScope.read(context);
     List<MemoryNode> related = _graph.relatedOf(node.id);
     try {
       final MemoryDetail detail = await state.memoryService.detail(node.id);
       if (detail.related.isNotEmpty) related = detail.related;
     } catch (_) {
-      // 详情接口未就绪时用图谱内的关联
+      // 详情接口不可用时用图谱内的关联
     }
     if (!mounted) return;
+    final bool wide = MediaQuery.sizeOf(context).width >= 700;
+    if (wide) {
+      setState(() {
+        _selectedId = node.id;
+        _detailNode = node;
+        _detailRelated = related;
+      });
+      return;
+    }
+    setState(() => _selectedId = node.id);
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       builder: (BuildContext ctx) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      boxShadow: <BoxShadow>[
-                        BoxShadow(
-                          color: AppColors.cocoa.withAlpha(90),
-                          blurRadius: 8,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text(
-                    '记忆详情',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-                  ),
-                  const Spacer(),
-                  Text(
-                    '权重 ${(node.weight * 100).toStringAsFixed(0)}%',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: AppColors.inkSoft,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                node.label,
-                style: const TextStyle(
-                  fontSize: 15,
-                  height: 1.5,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              if (node.preview.isNotEmpty) ...<Widget>[
-                const SizedBox(height: 6),
-                Text(
-                  node.preview,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    height: 1.55,
-                    color: AppColors.inkSoft,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 14),
-              _kv('创建时间', formatDateTime(node.createdAt)),
-              _kv('大类目', node.big.isEmpty ? '未分类' : node.big),
-              _kv('小类目', node.small.isEmpty ? '未分类' : node.small),
-              _kv('所属角色', _characterName),
-              const SizedBox(height: 10),
-              const Text(
-                '关联记忆',
-                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 6),
-              if (related.isEmpty)
-                const Text(
-                  '暂时没有关联记忆',
-                  style: TextStyle(fontSize: 11.5, color: AppColors.inkSoft),
-                )
-              else
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: related
-                      .map(
-                        (MemoryNode r) => Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.white,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: AppColors.sand),
-                          ),
-                          child: Text(
-                            shortText(r.label, 18),
-                            style: const TextStyle(fontSize: 11.5),
-                          ),
-                        ),
-                      )
-                      .toList(),
-                ),
-              const SizedBox(height: 12),
-              const Text(
-                '记忆点亮度代表权重：越亮说明在角色心里越重要。',
-                style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
-              ),
-            ],
+          child: SingleChildScrollView(
+            child: _detailContent(node, related),
           ),
         ),
       ),
+    );
+    if (mounted) setState(() => _selectedId = null);
+  }
+
+  Widget _detailContent(MemoryNode node, List<MemoryNode> related) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: AppColors.cocoa.withAlpha(90),
+                    blurRadius: 8,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Text(
+              '记忆详情',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+            ),
+            const Spacer(),
+            Text(
+              '权重 ${(node.weight * 100).toStringAsFixed(0)}%',
+              style: const TextStyle(
+                fontSize: 11,
+                color: AppColors.inkSoft,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          node.label,
+          style: const TextStyle(
+            fontSize: 15,
+            height: 1.5,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        if (node.preview.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            node.preview,
+            style: const TextStyle(
+              fontSize: 13,
+              height: 1.55,
+              color: AppColors.inkSoft,
+            ),
+          ),
+        ],
+        const SizedBox(height: 14),
+        _kv('创建时间', formatDateTime(node.createdAt)),
+        _kv('大类目', node.big.isEmpty ? '未分类' : node.big),
+        _kv('小类目', node.small.isEmpty ? '未分类' : node.small),
+        _kv('所属角色', _characterName),
+        const SizedBox(height: 10),
+        const Text(
+          '关联记忆',
+          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 6),
+        if (related.isEmpty)
+          const Text(
+            '暂时没有关联记忆',
+            style: TextStyle(fontSize: 11.5, color: AppColors.inkSoft),
+          )
+        else
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: related
+                .map(
+                  (MemoryNode r) => Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.sand),
+                    ),
+                    child: Text(
+                      shortText(r.label, 18),
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        const SizedBox(height: 12),
+        const Text(
+          '记忆点亮度代表权重：越亮说明在角色心里越重要。',
+          style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+        ),
+      ],
+    );
+  }
+
+  Widget _detailPanel() {
+    final MemoryNode? node = _detailNode;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(0, 8, 8, 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.cream.withAlpha(245),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: node == null
+          ? const Center(
+              child: Text(
+                '点击白色记忆点\n查看创建时间、类目、内容与关联',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: AppColors.inkSoft),
+              ),
+            )
+          : SingleChildScrollView(
+              child: _detailContent(node, _detailRelated),
+            ),
     );
   }
 
@@ -340,7 +383,9 @@ class _MemoryPageState extends State<MemoryPage> {
       ),
       body: Container(
         color: AppColors.canvasBg,
-        child: _loading
+        child: ContentFrame(
+          maxWidth: 760,
+          child: _loading
             ? const Center(
                 child: CircularProgressIndicator(color: AppColors.latte),
               )
@@ -378,8 +423,24 @@ class _MemoryPageState extends State<MemoryPage> {
                       ),
                     ),
                   )
-                : _graphView(),
+                : _graphViewResponsive(),
+        ),
       ),
+    );
+  }
+
+  Widget _graphViewResponsive() {
+    return LayoutBuilder(
+      builder: (BuildContext ctx, BoxConstraints c) {
+        if (c.maxWidth < 700) return _graphView();
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Expanded(child: _graphView()),
+            SizedBox(width: 300, child: _detailPanel()),
+          ],
+        );
+      },
     );
   }
 

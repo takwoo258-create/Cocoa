@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/layout.dart';
 
 import '../../core/app_state.dart';
 import '../../core/constants.dart';
@@ -155,7 +156,7 @@ class ModelRoutingPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('模型分工')),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 20),
+        padding: pagePadding(context, bottom: 20),
         children: <Widget>[
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 10, 16, 6),

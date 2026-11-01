@@ -1,12 +1,18 @@
 // 版本检查：从 GitHub Release 读取最新 APK，并提供 gh-proxy.com 加速下载地址
 import { Router } from 'express';
 import { getMeta, setMeta } from '../db/index.js';
+import { getAdminSetting } from '../services/settings.js';
 import logger from '../core/logger.js';
 import env from '../env.js';
 
 const REPO = process.env.COCOA_GITHUB_REPO || 'takwoo258-create/Cocoa';
 const PROXY_PREFIX = (process.env.COCOA_GH_PROXY || 'https://gh-proxy.com/').replace(/\/*$/, '/');
 const CACHE_MS = 10 * 60_000;
+
+// Release 说明中出现 [force] / [force-update] / <!-- cocoa:force --> 即视为强制更新
+export function releaseForcesUpdate(notes = '') {
+  return /\[force(-update)?\]|<!--\s*cocoa:force\s*-->|强制更新/i.test(String(notes || ''));
+}
 let memoryCache = { at: 0, data: null };
 
 export function semverParts(v) {
@@ -111,11 +117,27 @@ export default function register() {
     }
 
     const updateAvailable = compareVersion(latest.version, current) > 0;
+    const updateCfg = getAdminSetting('update', {}) || {};
+    const minVersion = String(updateCfg.minVersion || '').trim();
+    const minVersionHit = Boolean(minVersion) && compareVersion(current, minVersion) < 0;
+    const forceUpdate = updateAvailable && (
+      Boolean(updateCfg.force) || releaseForcesUpdate(latest.notes) || minVersionHit
+    );
+    const forceReason = !forceUpdate
+      ? null
+      : updateCfg.force
+        ? 'admin'
+        : minVersionHit
+          ? 'min_version'
+          : 'release';
     res.json({
       ok: true,
       current,
       latest,
       updateAvailable,
+      forceUpdate,
+      forceReason,
+      minVersion: minVersion || null,
       source,
       proxy: PROXY_PREFIX,
       checkedAt: new Date().toISOString(),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/layout.dart';
 
 import '../core/api_client.dart';
 import '../core/app_state.dart';
@@ -116,7 +117,7 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
       body: RefreshIndicator(
         onRefresh: _load,
         child: ListView(
-          padding: const EdgeInsets.only(bottom: 24),
+          padding: pagePadding(context),
           children: <Widget>[
             CharacterStatusCard(
               characterName: widget.character.name,

@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/app_state.dart';
 import 'core/global.dart';
+import 'core/layout.dart';
 import 'core/theme.dart';
 import 'pages/app_entry.dart';
 import 'pages/login_page.dart';
@@ -63,6 +64,10 @@ class _CocoaAppState extends State<CocoaApp> {
           GlobalWidgetsLocalizations.delegate,
           GlobalCupertinoLocalizations.delegate,
         ],
+        // v1.1.0：手机锁竖屏、平板允许横竖屏，随尺寸变化重新应用。
+        builder: (BuildContext context, Widget? child) => OrientationGate(
+          child: child ?? const SizedBox.shrink(),
+        ),
         home: const SplashPage(),
       ),
     );

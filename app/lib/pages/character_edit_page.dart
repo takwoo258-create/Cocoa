@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/layout.dart';
 
 import '../core/api_client.dart';
 import '../core/app_state.dart';
@@ -256,7 +257,7 @@ class _CharacterEditPageState extends State<CharacterEditPage> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+        padding: pagePadding(context, top: 8),
         children: <Widget>[
           Container(
             padding: const EdgeInsets.all(14),

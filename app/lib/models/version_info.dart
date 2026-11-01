@@ -65,6 +65,9 @@ class VersionCheckResult {
     this.source = '',
     this.latest = LatestVersion.empty,
     this.updateAvailable = false,
+    this.forceUpdate = false,
+    this.forceReason = '',
+    this.minVersion = '',
     this.proxy = '',
     this.checkedAt = '',
   });
@@ -74,6 +77,11 @@ class VersionCheckResult {
   final String source;
   final LatestVersion latest;
   final bool updateAvailable;
+
+  /// v1.1.0：强制更新（忽略版本不能绕过）。
+  final bool forceUpdate;
+  final String forceReason;
+  final String minVersion;
   final String proxy;
   final String checkedAt;
 
@@ -85,6 +93,9 @@ class VersionCheckResult {
         source: asString(j['source']),
         latest: LatestVersion.fromJson(asMap(j['latest'])),
         updateAvailable: asBool(j['updateAvailable']),
+        forceUpdate: asBool(j['forceUpdate']),
+        forceReason: asString(j['forceReason']),
+        minVersion: asString(j['minVersion']),
         proxy: asString(j['proxy']),
         checkedAt: asString(j['checkedAt']),
       );

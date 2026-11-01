@@ -1,4 +1,5 @@
 import 'package:fl_chart/fl_chart.dart';
+import '../core/layout.dart';
 import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
@@ -783,32 +784,54 @@ class _StatsPageState extends State<StatsPage> {
         ],
       );
     }
+    final bool wide = MediaQuery.sizeOf(context).width >= 700;
+    final Widget usageCard = SectionCard(
+      title: '用量柱状图',
+      trailing: const Text(
+        '点击柱体查看详情',
+        style: TextStyle(fontSize: 9.5, color: AppColors.inkSoft),
+      ),
+      child: _usageChart(),
+    );
+    final Widget intimacyCard = SectionCard(
+      title: '亲密度变化',
+      child: _intimacyChart(),
+    );
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: pagePadding(context),
         children: <Widget>[
           _characterBar(),
           const SizedBox(height: 4),
           _rangeBar(),
           _tokenCards(),
-          SectionCard(
-            title: '用量柱状图',
-            trailing: const Text(
-              '点击柱体查看详情',
-              style: TextStyle(fontSize: 9.5, color: AppColors.inkSoft),
-            ),
-            child: _usageChart(),
-          ),
+          if (wide)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Expanded(child: usageCard),
+                const SizedBox(width: 8),
+                Expanded(child: intimacyCard),
+              ],
+            )
+          else ...<Widget>[usageCard, intimacyCard],
           _companionBanner(),
-          SectionCard(
-            title: '亲密度变化',
-            child: _intimacyChart(),
-          ),
-          const SizedBox(height: 4),
-          _overviewGrid(),
-          const SizedBox(height: 6),
-          _modelsSection(),
+          if (wide)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Expanded(child: _overviewGrid()),
+                const SizedBox(width: 8),
+                Expanded(child: _modelsSection()),
+              ],
+            )
+          else ...<Widget>[
+            const SizedBox(height: 4),
+            _overviewGrid(),
+            const SizedBox(height: 6),
+            _modelsSection(),
+          ],
         ],
       ),
     );

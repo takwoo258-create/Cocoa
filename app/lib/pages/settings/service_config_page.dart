@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/layout.dart';
 
 import '../../core/app_state.dart';
 import '../../core/constants.dart';
@@ -33,7 +34,7 @@ class ServiceConfigPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('服务配置')),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: pagePadding(context),
         children: <Widget>[
           if (!state.chatReady)
             Container(

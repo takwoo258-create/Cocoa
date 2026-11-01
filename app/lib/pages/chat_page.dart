@@ -10,6 +10,7 @@ import '../core/app_state.dart';
 import '../core/constants.dart';
 import '../core/global.dart';
 import '../core/json_utils.dart';
+import '../core/layout.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
 import '../core/ws_service.dart';
@@ -727,17 +728,20 @@ class _ChatPageState extends State<ChatPage> {
           ),
         ],
       ),
-      body: Column(
-        children: <Widget>[
-          CharacterStatusBar(
-            characterName: widget.character.name,
-            state: _state,
-            onTap: _openStatusPage,
-          ),
-          if (_state.resting) _sleepBar(),
-          Expanded(child: _messageList()),
-          _inputBar(),
-        ],
+      body: ContentFrame(
+        maxWidth: 900,
+        child: Column(
+          children: <Widget>[
+            CharacterStatusBar(
+              characterName: widget.character.name,
+              state: _state,
+              onTap: _openStatusPage,
+            ),
+            if (_state.resting) _sleepBar(),
+            Expanded(child: _messageList()),
+            _inputBar(),
+          ],
+        ),
       ),
     );
   }

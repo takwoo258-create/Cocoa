@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/layout.dart';
 
 import '../core/api_client.dart';
 import '../core/app_state.dart';
@@ -223,7 +224,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 30),
+        padding: pagePadding(context, top: 0, bottom: 30),
         children: <Widget>[
           SectionCard(
             title: 'RSS 订阅源',

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/layout.dart';
 
 import '../../core/app_state.dart';
 import '../../core/theme.dart';
@@ -14,7 +15,7 @@ class AgentPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('对话偏好')),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: pagePadding(context),
         children: <Widget>[
           SectionCard(
             title: '思考与调试',

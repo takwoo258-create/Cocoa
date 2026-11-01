@@ -276,3 +276,21 @@ broadcast(userId, event)
 {"type":"typing","characterId":"c_x","typing":false}
 ```
 `checking`=句子完整性判断，`waiting`=30s 等待用户补全，`replying`=模型生成中。
+
+## 13. v1.1.0 增量
+
+### 13.1 版本检查强制更新
+`GET /api/version/latest` 新增：
+```json
+{"forceUpdate": true, "forceReason": "admin|min_version|release", "minVersion": "1.1.0"}
+```
+- 管理端 `update.force=true` → 强制；
+- `update.minVersion` 高于当前版本 → 强制；
+- Release 说明包含 `[force]` / `[force-update]` / `<!-- cocoa:force -->` → 强制。
+客户端收到 `forceUpdate=true` 时必须展示不可关闭的更新对话框，并禁用「忽略此版本」。
+
+### 13.2 管理端更新配置
+`GET/PUT /api/admin/settings` 新增：
+```json
+{"update": {"force": false, "minVersion": "1.1.0"}}
+```

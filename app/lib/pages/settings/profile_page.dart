@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/layout.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/api_client.dart';
@@ -113,7 +114,7 @@ class _ProfilePageState extends State<ProfilePage> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+        padding: pagePadding(context, top: 8),
         children: <Widget>[
           SectionCard(
             title: '账号信息',

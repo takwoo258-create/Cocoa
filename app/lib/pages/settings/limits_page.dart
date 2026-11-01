@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/layout.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_state.dart';
@@ -76,7 +77,7 @@ class _LimitsPageState extends State<LimitsPage> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: pagePadding(context),
         children: <Widget>[
           SectionCard(
             title: '限额总开关',

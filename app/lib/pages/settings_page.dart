@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/layout.dart';
 
 import '../core/app_state.dart';
 import '../core/constants.dart';
@@ -106,7 +107,7 @@ class SettingsPage extends StatelessWidget {
     final AppState state = AppScope.of(context);
     final String role = state.isAdmin ? '超级管理员' : '普通用户';
     return ListView(
-      padding: const EdgeInsets.only(bottom: 26),
+      padding: pagePadding(context, top: 0, bottom: 26),
       children: <Widget>[
         Container(
           margin: const EdgeInsets.fromLTRB(12, 10, 12, 2),

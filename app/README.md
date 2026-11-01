@@ -52,6 +52,17 @@ lib/
   下载通过 `MethodChannel('cocoa/native').invokeMethod('openUrl')` 调系统浏览器。
 - 限额增加 `limits.enabled` 总开关；移除 search/fetch 服务配置项（复用 DeepSeek）；注册 QQ 必填。
 
+## v1.1.0 增量
+
+- 方向：`OrientationGate`（`WidgetsBindingObserver.didChangeMetrics` + `SystemChrome`）在手机上锁竖屏，
+  平板允许竖屏 + 左右横屏；Manifest 不写 `screenOrientation`。
+- 宽屏：主页使用 `NavigationRail`；内容限宽居中（聊天 900、设置/统计/书架/记忆 760、管理端 1100）；
+  角色列表 2-3 列网格；统计图表两列；记忆详情左右分栏；登录卡片 480；配置对话框 560。
+- 强制更新：解析 `forceUpdate/forceReason/minVersion`；强制更新对话框 `barrierDismissible:false` +
+  `PopScope(canPop:false)`，无忽略按钮；忽略版本仅对非强制更新生效；关于页展示强制原因与最低版本。
+- 管理端「配置」页新增「应用更新」：强制更新开关 + 最低版本，读写 `/api/admin/settings` 的 `update`。
+- 版本 1.1.0+3。
+
 ## 构建
 
 工具链（本机）：Flutter 3.47.9 / Dart 3.13.7、AGP 9.1.0、Gradle 9.3.1、JDK 17、Android SDK 36。

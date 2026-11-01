@@ -7,6 +7,7 @@ import '../../core/app_state.dart';
 import '../../core/constants.dart';
 import '../../core/global.dart';
 import '../../core/json_utils.dart';
+import '../../core/layout.dart';
 import '../../core/theme.dart';
 import '../../core/utils.dart';
 import '../../models/stats_models.dart';
@@ -62,6 +63,8 @@ class _AdminPageState extends State<AdminPage>
   final TextEditingController _obToken = TextEditingController();
   final TextEditingController _obSelfId = TextEditingController();
   final TextEditingController _obPath = TextEditingController();
+  final TextEditingController _updateMinVersion = TextEditingController();
+  bool _updateForce = false;
   bool _smtpSecure = true;
   bool _settingsLoaded = false;
   bool _savingSettings = false;
@@ -90,6 +93,7 @@ class _AdminPageState extends State<AdminPage>
       _obToken,
       _obSelfId,
       _obPath,
+      _updateMinVersion,
     ]) {
       c.dispose();
     }
@@ -263,6 +267,7 @@ class _AdminPageState extends State<AdminPage>
       final Map<String, dynamic> s = await state.adminService.settings();
       final Map<String, dynamic> smtp = asMap(s['smtp']);
       final Map<String, dynamic> onebot = asMap(s['onebot']);
+      final Map<String, dynamic> update = asMap(s['update']);
       if (!mounted) return;
       setState(() {
         _smtpHost.text = asString(smtp['host']);
@@ -272,6 +277,8 @@ class _AdminPageState extends State<AdminPage>
         _smtpSecure = asBool(smtp['secure'], true);
         _obSelfId.text = asString(onebot['selfId']);
         _obPath.text = asString(onebot['wsPath'], '/onebot/ws');
+        _updateForce = asBool(update['force']);
+        _updateMinVersion.text = asString(update['minVersion']);
         _settingsLoaded = true;
         _loadedTabs.add(5);
       });
@@ -300,11 +307,16 @@ class _AdminPageState extends State<AdminPage>
           'selfId': _obSelfId.text.trim(),
           'wsPath': _obPath.text.trim(),
         },
+        'update': <String, dynamic>{
+          'force': _updateForce,
+          'minVersion': _updateMinVersion.text.trim(),
+        },
       });
       _smtpPass.clear();
       _obToken.clear();
       if (mounted) showToast('服务端配置已保存');
       await _loadSettings();
+      await _loadOverview();
     } on ApiException catch (e) {
       showToast(e.message, isError: true);
     } catch (e) {
@@ -1350,6 +1362,36 @@ class _AdminPageState extends State<AdminPage>
           ),
         ),
         SectionCard(
+          title: '应用更新',
+          child: Column(
+            children: <Widget>[
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text(
+                  '强制更新',
+                  style: TextStyle(fontSize: 13),
+                ),
+                subtitle: const Text(
+                  '开启后所有低于最新版本的客户端必须更新；也可用最低版本号强制。',
+                  style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                ),
+                value: _updateForce,
+                onChanged: (bool v) => setState(() => _updateForce = v),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _updateMinVersion,
+                decoration: const InputDecoration(
+                  labelText: '最低版本',
+                  hintText: '例如 1.1.0（留空表示不限制）',
+                  helperText: '当前客户端版本低于该值时也会触发强制更新',
+                ),
+              ),
+            ],
+          ),
+        ),
+        SectionCard(
           title: 'OneBot / NapCat',
           child: Column(
             children: <Widget>[
@@ -1492,9 +1534,11 @@ class _AdminPageState extends State<AdminPage>
             ],
           ),
           Expanded(
-            child: TabBarView(
-              controller: _tab,
-              children: <Widget>[
+            child: ContentFrame(
+              maxWidth: 1100,
+              child: TabBarView(
+                controller: _tab,
+                children: <Widget>[
                 _overviewTab(),
                 _usersTab(),
                 _usageTab(),
@@ -1505,6 +1549,7 @@ class _AdminPageState extends State<AdminPage>
               ],
             ),
           ),
+        ),
         ],
       ),
     );
