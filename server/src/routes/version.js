@@ -141,19 +141,22 @@ export function buildUpdateState(releases, current, updateCfg = {}) {
   const minVersion = String(updateCfg.minVersion || '').trim();
   const adminForce = Boolean(updateCfg.force);
 
-  // 每个版本的更新要求：Release 标记 / 管理端最低版本 / 管理端整体强制（最新版）
+  // 每个版本的更新要求：Release 显式标记 / 管理端最低版本（仅最低目标版本）/ 管理端整体要求（最新版）
   const forceMap = new Map();
   for (const r of sorted) {
-    let force = releaseForcesUpdate(r.notes);
-    let reason = force ? 'release' : null;
-    if (minVersion && compareVersion(r.version, minVersion) >= 0 && compareVersion(current, minVersion) < 0) {
-      force = true;
-      reason = reason || 'min_version';
-    }
-    forceMap.set(r.version, { force, reason });
+    const marked = releaseForcesUpdate(r.notes);
+    if (marked) forceMap.set(r.version, { force: true, reason: 'release' });
+  }
+  const minTarget = minVersion && compareVersion(current, minVersion) < 0
+    ? available
+        .filter((r) => compareVersion(r.version, minVersion) >= 0)
+        .sort((a, b) => compareVersion(a.version, b.version))[0] || null
+    : null;
+  if (minTarget) {
+    const item = forceMap.get(minTarget.version) || { force: false, reason: null };
+    forceMap.set(minTarget.version, { force: true, reason: item.reason || 'min_version' });
   }
   if (adminForce && latest && compareVersion(latest.version, current) > 0) {
-    const item = forceMap.get(latest.version) || { force: false, reason: null };
     forceMap.set(latest.version, { force: true, reason: 'admin' });
   }
 
@@ -162,18 +165,11 @@ export function buildUpdateState(releases, current, updateCfg = {}) {
     .filter((r) => forceMap.get(r.version)?.force)
     .sort((a, b) => compareVersion(a.version, b.version));
   let required = forcedSorted[0] || null;
-
-  // 管理端最低版本优先：低于 minVersion 的强制版本不应成为起点
-  if (minVersion && compareVersion(current, minVersion) < 0) {
-    const minTarget = available
-      .filter((r) => compareVersion(r.version, minVersion) >= 0)
-      .sort((a, b) => compareVersion(a.version, b.version))[0] || null;
-    const forcedAboveMin = forcedSorted.filter((r) => minTarget && compareVersion(r.version, minTarget.version) >= 0);
-    required = forcedAboveMin[0] || minTarget || required;
-    if (required) {
-      const item = forceMap.get(required.version) || { force: false, reason: null };
-      forceMap.set(required.version, { force: true, reason: item.reason || 'min_version' });
-    }
+  if (minTarget) {
+    // 低于 minVersion 的强制版本不成为起点；若没有更高的强制版本，则 minTarget 为起点
+    const forcedAboveMin = forcedSorted.filter((r) => compareVersion(r.version, minTarget.version) >= 0);
+    required = forcedAboveMin[0] || minTarget;
+    forceMap.set(required.version, { force: true, reason: forceMap.get(required.version)?.reason || 'min_version' });
   }
   if (adminForce && latest && compareVersion(latest.version, current) > 0) required = latest;
 

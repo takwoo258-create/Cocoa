@@ -87,6 +87,7 @@ test('多版本更新：强制版本 + 更高可选版本 + Beta 排序（v1.3.0
   const cfgForce = buildUpdateState(releases, '1.2.1', { minVersion: '1.3.0' });
   assert.equal(cfgForce.required.version, '1.3.0');
   assert.equal(cfgForce.forceUpdate, true);
+  assert.equal(cfgForce.releases.find((r) => r.version === '1.3.0+++Beta 1').force, false, '更高可选 Beta 不应被标记为必须');
 });
 
 test('更新接口：返回多版本列表', async () => {
