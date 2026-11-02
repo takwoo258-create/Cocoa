@@ -53,6 +53,7 @@ class _ChatPageState extends State<ChatPage> {
   StreamSubscription<WsEvent>? _sub;
   final List<Timer> _timers = <Timer>[];
   final List<ChatMessage> _segmentQueue = <ChatMessage>[];
+  final Set<String> _seenMessageIds = <String>{};
   Timer? _segmentTimer;
   bool _segmentActive = false;
 
@@ -132,7 +133,54 @@ class _ChatPageState extends State<ChatPage> {
         setState(() => _connected = true);
         break;
       case 'message':
-        final ChatMessage msg = ChatMessage.fromJson(asMap(d['message']));
+        // v1.3.0 一次性下发：{content, agent:[{content,wait}], devide}
+        final List<dynamic> parts = asList(d['agent']);
+        if (parts.isNotEmpty) {
+          final String baseId = asString(
+            asMap(d['message'])['id'],
+            'agent_${DateTime.now().microsecondsSinceEpoch}',
+          );
+          final int total = asInt(d['devide'], parts.length);
+          for (int i = 0; i < parts.length; i++) {
+            final Map<String, dynamic> part = asMap(parts[i]);
+            final String content = asString(part['content']);
+            if (content.isEmpty) continue;
+            _enqueueAgent(ChatMessage(
+              id: '${baseId}_seg${i + 1}',
+              role: 'agent',
+              content: content,
+              createdAt: asString(asMap(d['message'])['createdAt']),
+              meta: <String, dynamic>{
+                'segment': i + 1,
+                'segments': total,
+                'wait': asInt(part['wait']),
+              },
+            ));
+          }
+          break;
+        }
+        final List<dynamic> batch = asList(
+          d['messages'] is List
+              ? d['messages']
+              : (d['segments'] is List ? d['segments'] : const <dynamic>[]),
+        );
+        if (batch.isNotEmpty) {
+          for (final dynamic raw in batch) {
+            final ChatMessage part = ChatMessage.fromJson(asMap(raw));
+            if (part.content.isEmpty && !part.isImage && !part.isVoice) continue;
+            _enqueueAgent(part);
+          }
+          break;
+        }
+        final Map<String, dynamic> rawMessage = asMap(d['message']);
+        final ChatMessage msg = rawMessage.isEmpty
+            ? ChatMessage(
+                id: 'agent_${DateTime.now().microsecondsSinceEpoch}',
+                role: 'agent',
+                content: asString(d['content']),
+                createdAt: asString(d['createdAt']),
+              )
+            : ChatMessage.fromJson(rawMessage);
         if (msg.content.isEmpty && !msg.isImage && !msg.isVoice) break;
         _enqueueAgent(msg);
         break;
@@ -201,17 +249,19 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _enqueueAgent(ChatMessage msg) {
-    setState(() {
-      _typing = false;
-      _typingStage = null;
-    });
+    if (msg.id.isNotEmpty && !_seenMessageIds.add(msg.id)) return;
     final int? segments = msg.segments;
     if (segments != null && segments > 1) {
+      // 一次性下发的多段消息不要再把打字态重置掉。
       _segmentQueue.add(msg);
       _segmentQueue.sort((ChatMessage a, ChatMessage b) =>
           (a.segment ?? 0).compareTo(b.segment ?? 0));
       _drainSegments();
     } else {
+      setState(() {
+        _typing = false;
+        _typingStage = null;
+      });
       _appendMessage(msg);
     }
   }
@@ -221,23 +271,34 @@ class _ChatPageState extends State<ChatPage> {
     _segmentActive = true;
     final ChatMessage msg = _segmentQueue.removeAt(0);
     _appendMessage(msg);
-    final int wait = (msg.wait ?? 0).clamp(0, 8);
-    _segmentTimer?.cancel();
-    _segmentTimer = Timer(Duration(seconds: wait), () {
+    final bool more = _segmentQueue.isNotEmpty;
+    if (!more) {
       _segmentActive = false;
-      if (!mounted) return;
-      setState(() => _typing = _segmentQueue.isNotEmpty);
-      _drainSegments();
-    });
+      if (mounted) setState(() => _typing = false);
+      return;
+    }
+    // 服务端一次性下发所有段；按 wait 等待时保持「正在输入」三点动画。
+    final int wait = (msg.wait ?? 0).clamp(0, 8);
+    if (mounted) {
+      setState(() => _typing = true);
+      _scrollToBottom();
+    }
+    _segmentTimer?.cancel();
+    _segmentTimer = Timer(
+      Duration(milliseconds: wait > 0 ? wait * 1000 : 450),
+      () {
+        _segmentActive = false;
+        if (!mounted) return;
+        _drainSegments();
+      },
+    );
   }
 
   void _appendMessage(ChatMessage msg) {
     if (!mounted) return;
     setState(() {
       _messages.add(msg);
-      if (msg.wait != null && msg.wait! > 0) {
-        _typing = true;
-      }
+      if (msg.id.isNotEmpty) _seenMessageIds.add(msg.id);
     });
     _scrollToBottom();
   }

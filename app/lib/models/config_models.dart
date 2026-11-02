@@ -75,6 +75,12 @@ class AppConfig {
     this.readyTts = false,
     this.readySearch = false,
     this.shared = const <String, dynamic>{},
+    this.providers = const <ProviderConfig>[],
+    this.modelSource = 'own',
+    this.systemProviderId = '',
+    this.providerMeta = const <String, ProviderMeta>{},
+    this.activeProviderId = const <String, String>{},
+    this.systemModels = const SystemModels(),
     this.raw = const <String, dynamic>{},
   });
 
@@ -88,6 +94,14 @@ class AppConfig {
 
   /// v1.2.0：他人分享的可用服务 {chat:{shareId,ownerCode,...,expiresAt,model}}。
   final Map<String, dynamic> shared;
+
+  /// v1.3.0：多提供源与统一模型。
+  final List<ProviderConfig> providers;
+  final String modelSource;
+  final String systemProviderId;
+  final Map<String, ProviderMeta> providerMeta;
+  final Map<String, String> activeProviderId;
+  final SystemModels systemModels;
   final Map<String, dynamic> raw;
 
   ServiceConfig service(String name) => services[name] ?? ServiceConfig.empty;
@@ -120,6 +134,12 @@ class AppConfig {
       }
     });
     final Map<String, dynamic> ready = asMap(j['ready']);
+    final List<ProviderConfig> providers =
+        asMapList(api['providers']).map(ProviderConfig.fromJson).toList();
+    final Map<String, ProviderMeta> providerMeta = <String, ProviderMeta>{};
+    asMap(api['providerMeta']).forEach((String key, dynamic value) {
+      providerMeta[key] = ProviderMeta.fromJson(asMap(value));
+    });
     return AppConfig(
       services: services,
       preferences: asMap(j['preferences']),
@@ -129,6 +149,12 @@ class AppConfig {
       readyTts: asBool(ready['tts']),
       readySearch: asBool(ready['search']),
       shared: asMap(j['shared']),
+      providers: providers,
+      modelSource: asString(api['modelSource'], 'own'),
+      systemProviderId: asString(api['systemProviderId']),
+      providerMeta: providerMeta,
+      activeProviderId: asStringMap(api['activeProviderId']),
+      systemModels: SystemModels.fromJson(asMap(j['systemModels'])),
       raw: j,
     );
   }
@@ -290,4 +316,106 @@ class ModelCapabilities {
       audio: m.supportsAudio,
     );
   }
+}
+
+/// v1.3.0：模型提供源（用户自建或系统统一提供）。
+class ProviderConfig {
+  const ProviderConfig({
+    required this.id,
+    this.name = '',
+    this.baseUrl = '',
+    this.apiKey = '',
+    this.apiKeySet = false,
+    this.models = const <String, String>{},
+    this.services = const <String>[],
+  });
+
+  final String id;
+  final String name;
+  final String baseUrl;
+  final String apiKey;
+  final bool apiKeySet;
+  final Map<String, String> models;
+  final List<String> services;
+
+  factory ProviderConfig.fromJson(Map<String, dynamic> j) => ProviderConfig(
+        id: asString(j['id']),
+        name: asString(j['name']),
+        baseUrl: asString(j['baseUrl']),
+        apiKey: asString(j['apiKey']),
+        apiKeySet: asBool(j['apiKeySet'], asString(j['apiKey']).isNotEmpty),
+        models: asStringMap(j['models']),
+        services: asStringList(j['services']),
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'name': name,
+        'baseUrl': baseUrl,
+        'apiKey': apiKey,
+        'models': models,
+        'services': services,
+      };
+
+  List<String> get effectiveServices =>
+      services.isNotEmpty ? services : models.keys.toList();
+
+  String get servicesLabel => effectiveServices.isEmpty
+      ? '未配置服务'
+      : effectiveServices.map((String s) => kServiceLabels[s] ?? s).join('、');
+}
+
+/// v1.3.0：某个服务当前生效的模型来源。
+class ProviderMeta {
+  const ProviderMeta({
+    this.source = '',
+    this.providerId = '',
+    this.providerName = '',
+  });
+
+  final String source;
+  final String providerId;
+  final String providerName;
+
+  factory ProviderMeta.fromJson(Map<String, dynamic> j) => ProviderMeta(
+        source: asString(j['source']),
+        providerId: asString(j['providerId']),
+        providerName: asString(j['providerName']),
+      );
+
+  String get label {
+    switch (source) {
+      case 'system':
+        return '系统统一模型';
+      case 'own':
+        return providerName.isEmpty ? '我的模型' : providerName;
+      case 'shared':
+        return '来自分享';
+      default:
+        return providerName;
+    }
+  }
+}
+
+/// v1.3.0：系统统一模型配置。
+class SystemModels {
+  const SystemModels({
+    this.enabled = false,
+    this.providers = const <ProviderConfig>[],
+  });
+
+  final bool enabled;
+  final List<ProviderConfig> providers;
+
+  factory SystemModels.fromJson(Map<String, dynamic> j) => SystemModels(
+        enabled: asBool(j['enabled']),
+        providers: asMapList(j['providers'])
+            .map(ProviderConfig.fromJson)
+            .toList(),
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'enabled': enabled,
+        'providers': providers.map((ProviderConfig p) => p.toJson()).toList(),
+      };
 }

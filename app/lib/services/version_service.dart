@@ -16,4 +16,18 @@ class VersionService {
     );
     return VersionCheckResult.fromJson(asMap(r));
   }
+
+  /// v1.3.0：多版本更新列表；失败时回退旧接口。
+  Future<VersionCheckResult> checkUpdates({required String current}) async {
+    try {
+      final dynamic r = await api.get(
+        '/version/updates',
+        query: <String, dynamic>{'current': current},
+        silent: true,
+      );
+      return VersionCheckResult.fromJson(asMap(r));
+    } catch (_) {
+      return check(current: current);
+    }
+  }
 }

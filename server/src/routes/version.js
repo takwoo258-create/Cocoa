@@ -1,4 +1,4 @@
-// 版本检查：从 GitHub Release 读取最新 APK，并提供 gh-proxy.com 加速下载地址
+// 版本检查：从 GitHub Release 读取版本/更新内容/APK，支持正式版与 Beta 快照片版
 import { Router } from 'express';
 import { getMeta, setMeta } from '../db/index.js';
 import { getAdminSetting } from '../services/settings.js';
@@ -8,6 +8,7 @@ import env from '../env.js';
 const REPO = process.env.COCOA_GITHUB_REPO || 'takwoo258-create/Cocoa';
 const PROXY_PREFIX = (process.env.COCOA_GH_PROXY || 'https://gh-proxy.com/').replace(/\/*$/, '/');
 const CACHE_MS = 10 * 60_000;
+const BETA_RE = /^(\d+\.\d+\.\d+)(?:\s*\+{3}\s*Beta\s*(\d+)|[-_. ]?beta[-_. ]?(\d+))$/i;
 
 // Release 说明中出现 [force] / [force-update] / <!-- cocoa:force --> 即视为需要更新到该版本
 export function releaseForcesUpdate(notes = '') {
@@ -17,23 +18,59 @@ export function releaseForcesUpdate(notes = '') {
     .replace(/`[^`]*`/g, ' ');
   return /\[force(-update)?\]|<!--\s*cocoa:force\s*-->|\[版本更新要求\]/i.test(text);
 }
-let memoryCache = { at: 0, data: null };
 
-export function semverParts(v) {
-  return String(v || '')
-    .replace(/^v/i, '')
-    .split(/[.+-]/)
-    .map((x) => Number.parseInt(x, 10) || 0);
+/** 解析语义版本与 Beta：1.2.1 / 1.3.0+++Beta 1 / 1.3.0-beta.2 */
+export function parseVersion(input = '') {
+  const raw = String(input || '').trim().replace(/^v/i, '');
+  const direct = raw.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (direct) {
+    return {
+      raw,
+      version: raw,
+      baseVersion: raw,
+      parts: [Number(direct[1]), Number(direct[2]), Number(direct[3])],
+      beta: false,
+      betaNumber: 0,
+      label: raw,
+    };
+  }
+  const betaMatch = raw.match(BETA_RE);
+  if (betaMatch) {
+    const base = betaMatch[1];
+    const n = Number(betaMatch[2] || betaMatch[3] || 1);
+    return {
+      raw,
+      version: `${base}+++Beta ${n}`,
+      baseVersion: base,
+      parts: base.split('.').map((x) => Number(x) || 0),
+      beta: true,
+      betaNumber: n,
+      label: `${base} Beta ${n}`,
+    };
+  }
+  const parts = raw.split(/[.+-]/).map((x) => Number.parseInt(x, 10) || 0);
+  return { raw, version: raw, baseVersion: raw, parts, beta: false, betaNumber: 0, label: raw };
 }
 
+/** 版本比较：Beta 低于同 base 的正式版；更高 base 的 Beta 高于旧正式版 */
 export function compareVersion(a, b) {
-  const x = semverParts(a);
-  const y = semverParts(b);
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] || 0) - (y[i] || 0);
+  const x = parseVersion(a);
+  const y = parseVersion(b);
+  for (let i = 0; i < 3; i++) {
+    const d = (x.parts[i] || 0) - (y.parts[i] || 0);
+    if (d !== 0) return d > 0 ? 1 : -1;
+  }
+  if (x.beta !== y.beta) return x.beta ? -1 : 1;
+  if (x.beta && y.beta) {
+    const d = x.betaNumber - y.betaNumber;
     if (d !== 0) return d > 0 ? 1 : -1;
   }
   return 0;
+}
+
+// 兼容旧测试/调用
+export function semverParts(v) {
+  return parseVersion(v).parts;
 }
 
 function proxyUrl(url) {
@@ -42,111 +79,203 @@ function proxyUrl(url) {
   return url;
 }
 
-function normalizeRelease(json) {
-  const tag = json?.tag_name || '';
-  const version = tag.replace(/^v/i, '') || '0.0.0';
-  const assets = Array.isArray(json?.assets) ? json.assets : [];
-  const apk = assets.find((a) => /\.apk$/i.test(a?.name || '')) || null;
+function pickApk(assets) {
+  const apk = (assets || []).find((a) => /\.apk$/i.test(a?.name || '')) || null;
+  if (!apk) return null;
   return {
-    version,
-    tag,
-    name: json?.name || `Cocoa ${tag}`,
-    notes: String(json?.body || '').slice(0, 8000),
-    publishedAt: json?.published_at || null,
-    prerelease: Boolean(json?.prerelease),
-    url: json?.html_url || `https://github.com/${REPO}/releases/tag/${tag}`,
-    apk: apk
-      ? {
-          name: apk.name,
-          size: Number(apk.size || 0),
-          directUrl: apk.browser_download_url,
-          url: proxyUrl(apk.browser_download_url),
-        }
-      : null,
+    name: apk.name,
+    size: Number(apk.size || 0),
+    directUrl: apk.browser_download_url,
+    url: proxyUrl(apk.browser_download_url),
   };
 }
 
-async function fetchGithubRelease() {
-  const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+function normalizeRelease(json) {
+  const tag = json?.tag_name || '';
+  const fromTag = parseVersion(tag);
+  const fromName = parseVersion(json?.name || '');
+  const parsed = fromTag.version && /^\d+\.\d+\.\d+/.test(fromTag.raw)
+    ? (fromTag.beta || !fromName.beta ? fromTag : fromName)
+    : fromName;
+  return {
+    version: parsed.version,
+    label: parsed.label,
+    baseVersion: parsed.baseVersion,
+    beta: parsed.beta,
+    betaNumber: parsed.betaNumber,
+    tag,
+    name: json?.name || `Cocoa ${tag}`,
+    notes: String(json?.body || '').slice(0, 20000),
+    publishedAt: json?.published_at || null,
+    prerelease: Boolean(json?.prerelease) || parsed.beta,
+    url: json?.html_url || `https://github.com/${REPO}/releases/tag/${tag}`,
+    apk: pickApk(json?.assets),
+  };
+}
+
+let memoryCache = { at: 0, data: null };
+
+async function fetchGithubReleases() {
+  const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
     headers: {
       accept: 'application/vnd.github+json',
-      'user-agent': 'cocoa-server/1.0.1',
+      'user-agent': 'cocoa-server/1.3.0',
     },
     signal: AbortSignal.timeout(12_000),
   });
   if (!res.ok) throw new Error(`GitHub HTTP ${res.status}`);
-  return normalizeRelease(await res.json());
+  const list = await res.json();
+  if (!Array.isArray(list)) throw new Error('GitHub releases 响应异常');
+  return list
+    .filter((r) => r && !r.draft)
+    .map(normalizeRelease)
+    .filter((r) => r.version && /^\d+\.\d+\.\d+/.test(r.baseVersion))
+    .sort((a, b) => compareVersion(b.version, a.version));
+}
+
+/** 计算更新列表、最新版、强制起点 */
+export function buildUpdateState(releases, current, updateCfg = {}) {
+  const sorted = [...releases].sort((a, b) => compareVersion(b.version, a.version));
+  const latest = sorted[0] || null;
+  const available = sorted.filter((r) => compareVersion(r.version, current) > 0);
+  const minVersion = String(updateCfg.minVersion || '').trim();
+  const adminForce = Boolean(updateCfg.force);
+
+  // 每个版本的更新要求：Release 标记 / 管理端最低版本 / 管理端整体强制（最新版）
+  const forceMap = new Map();
+  for (const r of sorted) {
+    let force = releaseForcesUpdate(r.notes);
+    let reason = force ? 'release' : null;
+    if (minVersion && compareVersion(r.version, minVersion) >= 0 && compareVersion(current, minVersion) < 0) {
+      force = true;
+      reason = reason || 'min_version';
+    }
+    forceMap.set(r.version, { force, reason });
+  }
+  if (adminForce && latest && compareVersion(latest.version, current) > 0) {
+    const item = forceMap.get(latest.version) || { force: false, reason: null };
+    forceMap.set(latest.version, { force: true, reason: 'admin' });
+  }
+
+  // 强制更新起点：最低的、高于当前版本且被标记为必须安装的版本
+  const forcedSorted = available
+    .filter((r) => forceMap.get(r.version)?.force)
+    .sort((a, b) => compareVersion(a.version, b.version));
+  let required = forcedSorted[0] || null;
+
+  // 管理端最低版本优先：低于 minVersion 的强制版本不应成为起点
+  if (minVersion && compareVersion(current, minVersion) < 0) {
+    const minTarget = available
+      .filter((r) => compareVersion(r.version, minVersion) >= 0)
+      .sort((a, b) => compareVersion(a.version, b.version))[0] || null;
+    const forcedAboveMin = forcedSorted.filter((r) => minTarget && compareVersion(r.version, minTarget.version) >= 0);
+    required = forcedAboveMin[0] || minTarget || required;
+    if (required) {
+      const item = forceMap.get(required.version) || { force: false, reason: null };
+      forceMap.set(required.version, { force: true, reason: item.reason || 'min_version' });
+    }
+  }
+  if (adminForce && latest && compareVersion(latest.version, current) > 0) required = latest;
+
+  const forceUpdate = Boolean(required);
+  const forceReason = required ? forceMap.get(required.version)?.reason || null : null;
+
+  return {
+    current,
+    latest,
+    releases: available.map((r) => ({
+      ...r,
+      force: Boolean(forceMap.get(r.version)?.force),
+      forceReason: forceMap.get(r.version)?.reason || null,
+    })),
+    required,
+    forceUpdate,
+    forceReason,
+    minVersion: minVersion || null,
+  };
+}
+
+async function getReleases({ refresh = false } = {}) {
+  if (!refresh && memoryCache.data && Date.now() - memoryCache.at < CACHE_MS) {
+    return { data: memoryCache.data, source: 'cache', warning: null };
+  }
+  try {
+    const releases = await fetchGithubReleases();
+    const data = { releases, fetchedAt: new Date().toISOString() };
+    memoryCache = { at: Date.now(), data };
+    setMeta('release_list_cache', JSON.stringify(data));
+    return { data, source: 'github', warning: null };
+  } catch (err) {
+    logger.warn('版本列表获取失败，尝试本地缓存', err.message);
+    const row = getMeta('release_list_cache', null);
+    if (row) {
+      try {
+        return { data: JSON.parse(row), source: 'cache', warning: err.message };
+      } catch { /* ignore */ }
+    }
+    return { data: null, source: 'unavailable', warning: err.message };
+  }
+}
+
+function legacyPayload(state, extra = {}) {
+  return {
+    ok: Boolean(state.latest),
+    current: state.current,
+    latest: state.latest,
+    updateAvailable: Boolean(state.releases.length),
+    forceUpdate: state.forceUpdate,
+    forceReason: state.forceReason,
+    minVersion: state.minVersion,
+    requiredVersion: state.required?.version || null,
+    releases: state.releases,
+    ...extra,
+  };
 }
 
 export default function register() {
   const r = Router();
 
-  r.get('/latest', async (req, res) => {
+  // 新接口：完整更新列表（含 Beta、逐版本更新要求、强制起点）
+  r.get('/updates', async (req, res) => {
     const current = String(req.query.current || '').trim() || '0.0.0';
-    let latest = null;
-    let source = 'cache';
-    let warning = null;
-
-    if (memoryCache.data && Date.now() - memoryCache.at < CACHE_MS) {
-      latest = memoryCache.data;
-    } else {
-      try {
-        latest = await fetchGithubRelease();
-        memoryCache = { at: Date.now(), data: latest };
-        setMeta('release_cache', JSON.stringify(latest));
-        source = 'github';
-      } catch (err) {
-        logger.warn('版本检查失败，尝试本地缓存', err.message);
-        warning = err.message;
-        const row = getMeta('release_cache', null);
-        if (row) {
-          try {
-            latest = JSON.parse(row);
-            source = 'cache';
-          } catch { /* ignore */ }
-        }
-      }
-    }
-
-    if (!latest) {
+    const { data, source, warning } = await getReleases({ refresh: req.query.refresh === '1' });
+    if (!data?.releases) {
       return res.json({
-        ok: false,
-        current,
-        latest: null,
-        updateAvailable: false,
-        source: 'unavailable',
-        warning: warning || '无法获取版本信息',
-        proxy: PROXY_PREFIX,
+        ok: false, current, latest: null, releases: [], updateAvailable: false,
+        forceUpdate: false, source: 'unavailable', warning: warning || '无法获取版本信息', proxy: PROXY_PREFIX,
       });
     }
-
-    const updateAvailable = compareVersion(latest.version, current) > 0;
     const updateCfg = getAdminSetting('update', {}) || {};
-    const minVersion = String(updateCfg.minVersion || '').trim();
-    const minVersionHit = Boolean(minVersion) && compareVersion(current, minVersion) < 0;
-    const forceUpdate = updateAvailable && (
-      Boolean(updateCfg.force) || releaseForcesUpdate(latest.notes) || minVersionHit
-    );
-    const forceReason = !forceUpdate
-      ? null
-      : updateCfg.force
-        ? 'admin'
-        : minVersionHit
-          ? 'min_version'
-          : 'release';
+    const state = buildUpdateState(data.releases, current, updateCfg);
     res.json({
-      ok: true,
-      current,
-      latest,
-      updateAvailable,
-      forceUpdate,
-      forceReason,
-      minVersion: minVersion || null,
+      ...legacyPayload(state),
       source,
-      proxy: PROXY_PREFIX,
       checkedAt: new Date().toISOString(),
+      proxy: PROXY_PREFIX,
       ...(warning ? { warning } : {}),
     });
+  });
+
+  // 兼容旧接口
+  r.get('/latest', async (req, res) => {
+    const current = String(req.query.current || '').trim() || '0.0.0';
+    const { data, source, warning } = await getReleases({ refresh: req.query.refresh === '1' });
+    if (!data?.releases) {
+      return res.json({
+        ok: false, current, latest: null, updateAvailable: false,
+        source: 'unavailable', warning: warning || '无法获取版本信息', proxy: PROXY_PREFIX,
+      });
+    }
+    const updateCfg = getAdminSetting('update', {}) || {};
+    const state = buildUpdateState(data.releases, current, updateCfg);
+    const payload = legacyPayload(state, {
+      source,
+      checkedAt: new Date().toISOString(),
+      proxy: PROXY_PREFIX,
+      ...(warning ? { warning } : {}),
+    });
+    if (!payload.latest) payload.ok = false;
+    res.json(payload);
   });
 
   return r;

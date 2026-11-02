@@ -353,3 +353,50 @@ broadcast(userId, event)
 
 ### 14.7 更新策略
 `GET /api/version/latest` 的 `forceUpdate` 逻辑不变；v1.2.0 发布时为需要更新的版本。仓库文档与客户端文案统一使用“需要更新/版本更新”。
+
+## 15. v1.3.0 增量
+
+### 15.1 多版本更新 `GET /api/version/updates?current=1.3.0`
+```json
+{
+  "ok": true, "current": "1.3.0", "source": "github",
+  "latest": {"version":"1.4.0","label":"1.4.0","tag":"v1.4.0","notes":"…","publishedAt":"…","apk":{...},"beta":false},
+  "releases": [
+    {"version":"1.4.0","label":"1.4.0","baseVersion":"1.4.0","beta":false,"betaNumber":0,
+     "force":false,"forceReason":null,"notes":"…","apk":{"url":"https://gh-proxy.com/…","size":0},"tag":"v1.4.0"},
+    {"version":"1.3.1+++Beta 1","label":"1.3.1 Beta 1","beta":true,"betaNumber":1,
+     "force":true,"forceReason":"release","notes":"…","apk":{...},"tag":"v1.3.1+++Beta1"}
+  ],
+  "requiredVersion": "1.3.1+++Beta 1",
+  "updateAvailable": true, "forceUpdate": true, "forceReason": "release",
+  "minVersion": "1.3.0", "proxy": "https://gh-proxy.com/", "checkedAt": "…"
+}
+```
+- `releases` 仅包含高于 current 的版本，按版本从高到低排序（Beta 低于同 base 正式版）。
+- `requiredVersion`：最低的必须安装版本（Release 标记 / 管理端 minVersion / admin force）。
+- 客户端默认选择 `latest`，可切换列表；需要更新的版本不能跳过。
+- Beta 版本号支持 `1.3.1+++Beta 1` / `1.3.1-beta.1`，标签如 `1.3.1 Beta 1`。
+
+### 15.2 统一模型配置
+`GET /api/config` 新增：
+```json
+{
+  "api": {
+    "providers": [{"id":"p1","name":"我的 DeepSeek","baseUrl":"…","apiKeySet":true,"apiKey":"****","models":{"chat":"deepseek-chat"},"services":["chat"]}],
+    "modelSource": "system|own",
+    "systemProviderId": "sys-ds",
+    "providerMeta": {"chat":{"source":"system|own|shared","providerId":"…","providerName":"…"}}
+  },
+  "systemModels": {"enabled": true, "providers": [{"id":"sys-ds","name":"Cocoa 统一模型","baseUrl":"…","apiKey":"****","models":{"chat":"deepseek-chat","embedding":"…"},"services":["chat","embedding"]}]}
+}
+```
+`PUT /api/config/api` 接受：
+```json
+{"modelSource":"system","systemProviderId":"sys-ds",
+ "providers":[{"id":"p1","name":"…","baseUrl":"…","apiKey":"sk-…|****","models":{"chat":"…","embedding":"…"}}],
+ "activeProviderId":{"chat":"p1","embedding":"p1"}}
+```
+管理端 `GET/PUT /api/admin/settings` 新增 `systemModels:{enabled,providers:[...]}`，API Key 只返回 `****`，传 `****` 保持原值。
+
+### 15.3 更新提示文案
+客户端不使用“强制更新”“最新版本”区分版本，仅展示版本号与「最新版」标签；更新详情中 `+/-/±` 转为“新增/删除/修改”。

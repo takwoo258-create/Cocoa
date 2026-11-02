@@ -60,6 +60,7 @@ class AppState extends ChangeNotifier {
   /// v1.0.1：版本推送状态。
   VersionCheckResult? versionCheck;
   String? ignoredVersionTag;
+  String? updateSnoozeDate;
   bool versionChecking = false;
   DateTime? _lastVersionCheckAt;
 
@@ -78,14 +79,57 @@ class AppState extends ChangeNotifier {
   bool get limitsEnabled => asBool(asMap(preferences['limits'])['enabled'], true);
 
   /// v1.1.0：需要更新优先，忽略版本不能绕过。
-  bool get forceUpdateAvailable => versionCheck?.forceUpdate ?? false;
+  bool get forceUpdateAvailable =>
+      (versionCheck?.forceUpdate ?? false) ||
+      (versionCheck?.requiredVersion.isNotEmpty ?? false);
+
+  LatestVersion? get requiredRelease {
+    final VersionCheckResult? r = versionCheck;
+    if (r == null || r.requiredVersion.isEmpty) return null;
+    for (final LatestVersion v in r.releases) {
+      if (v.version == r.requiredVersion || v.tag == r.requiredVersion) {
+        return v;
+      }
+    }
+    return r.latest;
+  }
+
+  List<LatestVersion> get selectableReleases {
+    final VersionCheckResult? r = versionCheck;
+    if (r == null) return const <LatestVersion>[];
+    if (r.releases.isNotEmpty) return r.releases;
+    if (r.latest.version.isNotEmpty) return <LatestVersion>[r.latest];
+    return const <LatestVersion>[];
+  }
+
+  String get _todayUtc8 {
+    final DateTime d = DateTime.now().toUtc().add(const Duration(hours: 8));
+    String two(int v) => v < 10 ? '0$v' : '$v';
+    return '${d.year}-${two(d.month)}-${two(d.day)}';
+  }
+
+  bool get updateSnoozedToday =>
+      updateSnoozeDate != null && updateSnoozeDate == _todayUtc8;
 
   bool get updateAvailable {
     final VersionCheckResult? r = versionCheck;
     if (r == null || !r.updateAvailable) return false;
-    if (r.forceUpdate) return false;
+    if (forceUpdateAvailable) return false;
+    if (updateSnoozedToday) return false;
     final String tag = r.latest.tag;
     return tag.isEmpty || tag != ignoredVersionTag;
+  }
+
+  Future<void> snoozeUpdatesToday() async {
+    updateSnoozeDate = _todayUtc8;
+    await storage.writeUpdateSnoozeDate(updateSnoozeDate);
+    notifyListeners();
+  }
+
+  Future<void> ignoreLatestUpdate() async {
+    final String tag = versionCheck?.latest.tag ?? '';
+    if (tag.isEmpty) return;
+    await ignoreVersion(tag);
   }
 
   void _buildApi(String url, String? tk) {
@@ -117,6 +161,7 @@ class AppState extends ChangeNotifier {
     debugMode = await storage.readDebug();
     thinkingMode = await storage.readThinking();
     ignoredVersionTag = await storage.readIgnoredVersionTag();
+    updateSnoozeDate = await storage.readUpdateSnoozeDate();
     _buildApi(baseUrl, token);
 
     if (token != null && token!.isNotEmpty) {
@@ -160,7 +205,7 @@ class AppState extends ChangeNotifier {
     versionChecking = true;
     notifyListeners();
     try {
-      versionCheck = await versionService.check(current: kAppVersion);
+      versionCheck = await versionService.checkUpdates(current: kAppVersion);
       _lastVersionCheckAt = DateTime.now();
     } catch (_) {
       // 版本检查失败不打扰用户

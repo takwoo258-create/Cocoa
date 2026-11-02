@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/app_state.dart';
 import '../core/global.dart';
 import '../core/theme.dart';
+import '../models/config_models.dart';
 import '../widgets/service_editor.dart';
 
 /// 启动/登录后强制配置对话模型（未配置则无法使用智能体）。
@@ -38,6 +39,74 @@ class _ApiSetupDialogState extends State<ApiSetupDialog> {
   void dispose() {
     _scroll.dispose();
     super.dispose();
+  }
+
+  Future<void> _useSystem(ProviderConfig provider) async {
+    final AppState state = AppScope.read(context);
+    setState(() => _busy = true);
+    try {
+      await state.configService.saveModelConfig(
+        modelSource: 'system',
+        systemProviderId: provider.id,
+      );
+      await state.refreshConfig();
+      if (!mounted) return;
+      if (state.chatReady) {
+        Navigator.of(context).pop(true);
+      } else {
+        showToast('系统模型尚未生效，请手动填写对话模型');
+      }
+    } catch (e) {
+      if (mounted) showToast('使用系统模型失败：$e', isError: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget? _systemQuick(AppState state) {
+    final SystemModels sys = state.config?.systemModels ?? const SystemModels();
+    if (!sys.enabled || sys.providers.isEmpty) return null;
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.cocoa.withAlpha(12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.cocoa.withAlpha(60)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text(
+            '使用系统统一模型（快捷选择）',
+            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: sys.providers
+                .map(
+                  (ProviderConfig p) => OutlinedButton(
+                    onPressed: _busy ? null : () => _useSystem(p),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 32),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      textStyle: const TextStyle(fontSize: 10.5),
+                    ),
+                    child: Text('${p.name} · ${p.servicesLabel}'),
+                  ),
+                )
+                .toList(),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            '也可以继续在下方手动配置自己的模型。',
+            style: TextStyle(fontSize: 10, color: AppColors.inkSoft),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _finish() async {
@@ -97,6 +166,7 @@ class _ApiSetupDialogState extends State<ApiSetupDialog> {
   @override
   Widget build(BuildContext context) {
     final AppState state = AppScope.read(context);
+    final Widget? systemQuick = _systemQuick(state);
     final MediaQueryData mq = MediaQuery.of(context);
     // Dialog 自身会把 MediaQuery.viewInsets 加到 insetPadding 上（键盘弹出时自动上移），
     // 这里只给出可滚动内容与高度上限，避免重复扣减导致内容被压得过小。
@@ -173,6 +243,8 @@ class _ApiSetupDialogState extends State<ApiSetupDialog> {
                             ],
                           ),
                         ),
+                        const SizedBox(height: 4),
+                        if (systemQuick != null) systemQuick,
                         const SizedBox(height: 4),
                         ServiceEditor(
                           key: _chatKey,

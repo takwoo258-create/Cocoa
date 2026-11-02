@@ -7,13 +7,12 @@ import '../core/constants.dart';
 import '../core/global.dart';
 import '../core/layout.dart';
 import '../core/json_utils.dart';
-import '../core/native.dart';
 import '../core/theme.dart';
 import '../core/ws_service.dart';
 import '../models/model_share.dart';
 import '../models/version_info.dart';
 import '../widgets/share_pending_dialog.dart';
-import '../widgets/force_update_dialog.dart';
+import '../widgets/update_dialog.dart';
 import 'admin/admin_page.dart';
 import 'bookshelf_page.dart';
 import 'character_list_page.dart';
@@ -127,12 +126,7 @@ class _HomePageState extends State<HomePage>
   void _maybeShowForce(AppState state) {
     final VersionCheckResult? check = state.versionCheck;
     if (check == null || !state.forceUpdateAvailable) return;
-    ForceUpdateDialog.show(
-      context,
-      latest: check.latest,
-      reason: check.forceReason,
-      minVersion: check.minVersion,
-    );
+    UpdateDialog.show(context, check: check);
   }
 
   void _selectTab(int index) {
@@ -141,18 +135,13 @@ class _HomePageState extends State<HomePage>
     _tabFade.forward(from: 0);
   }
 
-  Future<void> _openRelease(LatestVersion version) async {
-    final bool ok = await openExternalUrl(version.downloadUrl);
-    if (!ok) {
-      showToast('无法打开下载链接：${version.downloadUrl}', isError: true);
-    }
-  }
-
   Widget _versionBanner(AppState state) {
     final VersionCheckResult? check = state.versionCheck;
     if (check == null || !state.updateAvailable) return const SizedBox.shrink();
     final LatestVersion latest = check.latest;
-    return Container(
+    return GestureDetector(
+      onTap: () => UpdateDialog.show(context, check: check),
+      child: Container(
       margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
       padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
       decoration: BoxDecoration(
@@ -176,7 +165,7 @@ class _HomePageState extends State<HomePage>
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  '发现新版本 v${latest.version}',
+                  '发现新版本 ${latest.displayLabel}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 12.5,
@@ -230,10 +219,10 @@ class _HomePageState extends State<HomePage>
                   foregroundColor: Colors.white,
                   textStyle: const TextStyle(fontSize: 11),
                 ),
-                child: const Text('忽略此版本'),
+                child: const Text('下次再提醒'),
               ),
               FilledButton(
-                onPressed: () => _openRelease(latest),
+                onPressed: () => UpdateDialog.show(context, check: check),
                 style: FilledButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: AppColors.cocoa,
@@ -244,11 +233,12 @@ class _HomePageState extends State<HomePage>
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                child: const Text('立即更新'),
+                child: const Text('查看更新'),
               ),
             ],
           ),
         ],
+      ),
       ),
     );
   }

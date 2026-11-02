@@ -9,6 +9,7 @@ import '../../core/theme.dart';
 import '../../core/utils.dart';
 import '../../models/version_info.dart';
 import '../../widgets/common.dart';
+import '../../widgets/update_dialog.dart';
 import '../server_address_dialog.dart';
 
 /// 关于与版本二级页：手动检查更新、下载/忽略、服务地址、登录态。
@@ -32,17 +33,85 @@ class _AboutPageState extends State<AboutPage> {
     if (r == null) {
       showToast('检查更新失败，请稍后再试', isError: true);
     } else if (r.updateAvailable) {
-      showToast('发现新版本 v${r.latest.version}');
+      showToast('发现新版本 ${r.latest.displayLabel}');
     } else {
-      showToast('已是最新版本 v$kAppVersion');
+      showToast('已是最新 v$kAppVersion');
     }
   }
 
   Future<void> _openRelease(LatestVersion latest) async {
-    final bool ok = await openExternalUrl(latest.downloadUrl);
+    final String safe =
+        latest.version.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '-');
+    final bool ok = await downloadApk(latest.downloadUrl, 'Cocoa-$safe.apk');
     if (!ok) {
-      showToast('无法打开下载链接：${latest.downloadUrl}', isError: true);
+      final bool opened = await openExternalUrl(latest.downloadUrl);
+      if (!opened) {
+        showToast('无法打开下载链接：${latest.downloadUrl}', isError: true);
+      }
+    } else {
+      showToast('已开始下载 ${latest.displayLabel}');
     }
+  }
+
+  Widget _releaseTile(LatestVersion v, {bool latestBadge = false}) {
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      title: Row(
+        children: <Widget>[
+          Text(
+            v.displayLabel,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 6),
+          if (v.beta)
+            const Text(
+              'Beta',
+              style: TextStyle(fontSize: 9, color: AppColors.rose),
+            ),
+          if (!v.beta && latestBadge)
+            const Text(
+              '最新版',
+              style: TextStyle(fontSize: 9, color: AppColors.cocoa),
+            ),
+          if (v.force) ...<Widget>[
+            const SizedBox(width: 4),
+            const Text(
+              '需要更新',
+              style: TextStyle(fontSize: 9, color: AppColors.warn),
+            ),
+          ],
+        ],
+      ),
+      subtitle: Text(
+        v.notesSummary,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+      ),
+      children: <Widget>[
+        if (v.formattedNotes.isNotEmpty)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              v.formattedNotes,
+              style: const TextStyle(
+                fontSize: 11,
+                height: 1.55,
+                color: AppColors.inkSoft,
+              ),
+            ),
+          ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            onPressed: () => _openRelease(v),
+            child: Text('下载 ${v.displayLabel}'),
+          ),
+        ),
+      ],
+    );
   }
 
   String _forceReasonText(VersionCheckResult? check) {
@@ -93,14 +162,14 @@ class _AboutPageState extends State<AboutPage> {
                     Expanded(
                       child: Text(
                         forced
-                            ? '需要更新：v${latest.version}'
+                            ? '需要更新：${latest.displayLabel}'
                             : hasUpdate
-                                ? '发现新版本 v${latest.version}'
+                                ? '发现新版本 ${latest.displayLabel}'
                                 : check == null
                                     ? '尚未检查更新'
                                     : (!check.ok && latest.version.isEmpty
                                         ? '版本信息暂不可用'
-                                        : '已是最新版本'),
+                                        : '已是最新'),
                         style: const TextStyle(fontSize: 12.5),
                       ),
                     ),
@@ -160,19 +229,22 @@ class _AboutPageState extends State<AboutPage> {
                     Row(
                       children: <Widget>[
                         FilledButton(
-                          onPressed: () => _openRelease(latest),
+                          onPressed: () => UpdateDialog.show(
+                            context,
+                            check: check,
+                          ),
                           style: FilledButton.styleFrom(
                             minimumSize: const Size(0, 36),
                             padding:
                                 const EdgeInsets.symmetric(horizontal: 14),
                           ),
-                          child: const Text('下载安装包'),
+                          child: const Text('查看更新'),
                         ),
                         if (!forced) ...<Widget>[
                           const SizedBox(width: 10),
                           TextButton(
-                            onPressed: () => state.ignoreVersion(latest.tag),
-                            child: const Text('忽略此版本'),
+                            onPressed: () => state.ignoreLatestUpdate(),
+                            child: const Text('下次再提醒'),
                           ),
                         ],
                       ],
@@ -196,6 +268,20 @@ class _AboutPageState extends State<AboutPage> {
               ],
             ),
           ),
+          if (check != null && check.releases.isNotEmpty)
+            SectionCard(
+              title: '可用版本',
+              child: Column(
+                children: check.releases
+                    .map(
+                      (LatestVersion v) => _releaseTile(
+                        v,
+                        latestBadge: v.version == check.latest.version,
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
           SectionCard(
             title: '服务地址',
             child: Column(

@@ -17,6 +17,22 @@ class ConfigService {
     return getConfig();
   }
 
+  /// v1.3.0：保存多提供源 / 统一模型来源。
+  Future<AppConfig> saveModelConfig({
+    String? modelSource,
+    String? systemProviderId,
+    List<Map<String, dynamic>>? providers,
+    Map<String, String>? activeProviderId,
+  }) async {
+    await api.put('/config/api', body: <String, dynamic>{
+      if (modelSource != null) 'modelSource': modelSource,
+      if (systemProviderId != null) 'systemProviderId': systemProviderId,
+      if (providers != null) 'providers': providers,
+      if (activeProviderId != null) 'activeProviderId': activeProviderId,
+    });
+    return getConfig();
+  }
+
   Future<ModelListResult> listModels(String service) async {
     final dynamic r = await api.post(
       '/config/models',

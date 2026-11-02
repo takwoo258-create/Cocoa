@@ -12,8 +12,11 @@ import '../../core/json_utils.dart';
 import '../../core/layout.dart';
 import '../../core/theme.dart';
 import '../../core/utils.dart';
+import '../../models/config_models.dart';
 import '../../models/stats_models.dart';
+import '../../models/version_info.dart';
 import '../../widgets/common.dart';
+import '../../widgets/provider_editor_dialog.dart';
 
 /// 管理端：概览 / 用户 / 用量 / 会话 / 日志 / 服务配置 / 存储。
 class AdminPage extends StatefulWidget {
@@ -80,6 +83,8 @@ class _AdminPageState extends State<AdminPage>
   Timer? _upgradeTimer;
   bool _autoUpgrade = false;
   bool _updateAutoUpgrade = false;
+  bool _systemModelsEnabled = false;
+  List<ProviderConfig> _systemProviders = <ProviderConfig>[];
   String? _upgradingTag;
 
   @override
@@ -314,6 +319,12 @@ class _AdminPageState extends State<AdminPage>
         _updateForce = asBool(update['force']);
         _updateMinVersion.text = asString(update['minVersion']);
         _updateAutoUpgrade = asBool(update['autoUpgrade']);
+        final Map<String, dynamic> systemModels =
+            asMap(s['systemModels']);
+        _systemModelsEnabled = asBool(systemModels['enabled']);
+        _systemProviders = asMapList(systemModels['providers'])
+            .map(ProviderConfig.fromJson)
+            .toList();
         _settingsLoaded = true;
         _loadedTabs.add(5);
       });
@@ -346,6 +357,12 @@ class _AdminPageState extends State<AdminPage>
           'force': _updateForce,
           'minVersion': _updateMinVersion.text.trim(),
           'autoUpgrade': _updateAutoUpgrade,
+        },
+        'systemModels': <String, dynamic>{
+          'enabled': _systemModelsEnabled,
+          'providers': _systemProviders
+              .map((ProviderConfig p) => p.toJson())
+              .toList(),
         },
       });
       _smtpPass.clear();
@@ -1609,6 +1626,10 @@ class _AdminPageState extends State<AdminPage>
 
   Widget _upgradeVersionCard(Map<String, dynamic> v) {
     final String tag = asString(v['tag'], asString(v['version']));
+    final String rawVersion = asString(v['version'], tag);
+    final String label = asString(v['label'], parseVersionLabel(rawVersion));
+    final bool beta =
+        asBool(v['beta']) || label.toLowerCase().contains('beta');
     final String notes = formatUpdateNotes(asString(v['notes']));
     final bool running = asBool(_upgradeStatus['running']) || _upgradingTag != null;
     return Container(
@@ -1624,14 +1645,32 @@ class _AdminPageState extends State<AdminPage>
         children: <Widget>[
           Row(
             children: <Widget>[
-              Text(
-                asString(v['name'], tag),
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
+              Expanded(
+                child: Row(
+                  children: <Widget>[
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    if (beta)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 5),
+                        child: Text(
+                          'Beta',
+                          style: TextStyle(fontSize: 9, color: AppColors.rose),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 8),
               Text(
                 formatDate(asString(v['publishedAt'])),
                 style: const TextStyle(
@@ -1647,16 +1686,29 @@ class _AdminPageState extends State<AdminPage>
             style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
           ),
           if (notes.isNotEmpty) ...<Widget>[
-            const SizedBox(height: 6),
-            Text(
-              notes,
-              maxLines: 8,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 11,
-                height: 1.55,
-                color: AppColors.inkSoft,
+            const SizedBox(height: 2),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              shape: const Border(),
+              collapsedShape: const Border(),
+              dense: true,
+              title: const Text(
+                '更新内容',
+                style: TextStyle(fontSize: 11.5),
               ),
+              children: <Widget>[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    notes,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      height: 1.55,
+                      color: AppColors.inkSoft,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
           const SizedBox(height: 6),
@@ -1782,6 +1834,126 @@ class _AdminPageState extends State<AdminPage>
     );
   }
 
+  Future<void> _editSystemProvider([ProviderConfig? initial]) async {
+    final Map<String, dynamic>? data = await showProviderEditor(
+      context,
+      initial: initial,
+      system: true,
+    );
+    if (data == null || !mounted) return;
+    final ProviderConfig p = ProviderConfig(
+      id: asString(data['id']),
+      name: asString(data['name']),
+      baseUrl: asString(data['baseUrl']),
+      apiKey: asString(data['apiKey']),
+      apiKeySet: asString(data['apiKey']).isNotEmpty,
+      models: asStringMap(data['models']),
+      services: asStringMap(data['models']).keys.toList(),
+    );
+    setState(() {
+      final int idx =
+          _systemProviders.indexWhere((ProviderConfig x) => x.id == p.id);
+      if (idx >= 0) {
+        _systemProviders[idx] = p;
+      } else {
+        _systemProviders.add(p);
+      }
+    });
+  }
+
+  Future<void> _deleteSystemProvider(ProviderConfig p) async {
+    final bool ok = await confirmDialog(
+      context,
+      title: '删除系统提供源',
+      message: '确定删除「${p.name}」吗？',
+      confirmText: '删除',
+      danger: true,
+    );
+    if (!ok) return;
+    setState(() => _systemProviders.removeWhere((ProviderConfig x) => x.id == p.id));
+  }
+
+  Widget _systemModelsCard() {
+    return SectionCard(
+      title: '统一模型',
+      trailing: Switch(
+        value: _systemModelsEnabled,
+        onChanged: (bool v) => setState(() => _systemModelsEnabled = v),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text(
+            '启用后用户可在服务配置中选择系统提供源，也可继续配置自己的多个提供源。API Key 返回时会打码，提交 **** 表示保持原值。',
+            style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft, height: 1.5),
+          ),
+          const SizedBox(height: 6),
+          if (_systemProviders.isEmpty)
+            const Text(
+              '还没有系统提供源。',
+              style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+            ),
+          ..._systemProviders.map(
+            (ProviderConfig p) => Container(
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.all(9),
+              decoration: BoxDecoration(
+                color: AppColors.cream,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.sand),
+              ),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          p.name.isEmpty ? p.id : p.name,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          '${p.baseUrl} · ${p.servicesLabel}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: AppColors.inkSoft,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.edit_outlined, size: 17),
+                    onPressed: () => _editSystemProvider(p),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete_outline, size: 17),
+                    onPressed: () => _deleteSystemProvider(p),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () => _editSystemProvider(),
+              icon: const Icon(Icons.add, size: 15),
+              label: const Text('新增系统提供源', style: TextStyle(fontSize: 11)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _settingsTab() {
     if (!_settingsLoaded) {
       return Center(
@@ -1875,6 +2047,7 @@ class _AdminPageState extends State<AdminPage>
             ],
           ),
         ),
+        _systemModelsCard(),
         SectionCard(
           title: '应用更新',
           child: Column(
@@ -1887,7 +2060,7 @@ class _AdminPageState extends State<AdminPage>
                   style: TextStyle(fontSize: 13),
                 ),
                 subtitle: const Text(
-                  '开启后所有低于最新版本的客户端需要更新；也可用最低版本号限制。',
+                  '开启后所有低于当前版本的客户端需要更新；也可用最低版本号限制。',
                   style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
                 ),
                 value: _updateForce,

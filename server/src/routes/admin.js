@@ -9,7 +9,10 @@ import { nowIso, asInt, clamp, truncate } from '../core/util.js';
 import { maskSecret, decryptText, decryptJson } from '../core/crypto.js';
 import { publicUser } from './auth.js';
 import { audit, listAudit } from '../services/audit.js';
-import { getAdminSetting, setAdminSetting, getSmtpConfig, getOnebotConfig, mergeDeep } from '../services/settings.js';
+import {
+  getAdminSetting, setAdminSetting, getSmtpConfig, getOnebotConfig, mergeDeep,
+  getSystemModelsConfig, getSystemModelsPublic, normalizeProvider,
+} from '../services/settings.js';
 import { sendMail } from '../mail/sender.js';
 import { usageFor } from './stats.js';
 import { onebotStatus } from '../onebot/server.js';
@@ -465,6 +468,10 @@ export default function register() {
         uapiKeySet: Boolean(integrations.uapiKey),
         uapiKeyMasked: maskSecret(integrations.uapiKey),
       },
+      systemModels: {
+        ...getSystemModelsPublic(),
+        keyCount: getSystemModelsConfig().providers.filter((p) => p.apiKey).length,
+      },
       ready: {
         smtp: Boolean(smtp.host && smtp.user),
         onebot: Boolean(onebot.token || onebot.selfId),
@@ -514,6 +521,31 @@ export default function register() {
         changed.push('integrations');
       }
     }
+    if (body.systemModels && typeof body.systemModels === 'object') {
+      submitted.push('systemModels');
+      const current = getAdminSetting('system_models', {}) || {};
+      const next = { ...current };
+      if (body.systemModels.enabled !== undefined) next.enabled = Boolean(body.systemModels.enabled);
+      if (Array.isArray(body.systemModels.providers)) {
+        if (body.systemModels.providers.length > 12) throw badRequest('最多配置 12 个系统模型提供源', 'too_many_system_providers');
+        const existing = new Map((Array.isArray(current.providers) ? current.providers : []).map((p) => [String(p.id), p]));
+        next.providers = body.systemModels.providers.map((input) => {
+          const id = String(input?.id || '').trim();
+          const prev = existing.get(id);
+          const base = normalizeProvider({ ...(prev || {}), ...input, id }, { mask: false });
+          if (typeof input?.apiKey === 'string') {
+            if (KEEP.has(input.apiKey)) base.apiKey = prev?.apiKey || '';
+            else if (!input.apiKey.trim()) base.apiKey = '';
+            else base.apiKey = input.apiKey.trim();
+          }
+          if (!base.models || !Object.keys(base.models).length) throw badRequest('系统模型至少配置一个服务模型', 'system_provider_model_required');
+          return base;
+        });
+      }
+      setAdminSetting('system_models', next);
+      changed.push('systemModels');
+    }
+
     if (body.onebot && typeof body.onebot === 'object') {
       submitted.push('onebot');
       const patch = sanitizeOnebot(body.onebot);
@@ -539,6 +571,7 @@ export default function register() {
         const i = getAdminSetting('integrations', {}) || {};
         return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey) };
       })(),
+      systemModels: getSystemModelsPublic(),
     });
   });
 

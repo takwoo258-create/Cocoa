@@ -1,7 +1,7 @@
 import '../core/json_utils.dart';
 import '../core/utils.dart';
 
-/// GET /api/version/latest 的最新版本信息。
+/// GET /api/version/latest 的版本信息。
 class LatestVersion {
   const LatestVersion({
     this.version = '',
@@ -14,6 +14,12 @@ class LatestVersion {
     this.apkSize = 0,
     this.apkUrl = '',
     this.apkDirectUrl = '',
+    this.label = '',
+    this.baseVersion = '',
+    this.beta = false,
+    this.betaNumber = 0,
+    this.force = false,
+    this.forceReason = '',
   });
 
   final String version;
@@ -27,7 +33,22 @@ class LatestVersion {
   final String apkUrl;
   final String apkDirectUrl;
 
+  /// v1.3.0：展示标签（Beta 等）与需要更新标记。
+  final String label;
+  final String baseVersion;
+  final bool beta;
+  final int betaNumber;
+  final bool force;
+  final String forceReason;
+
   static const LatestVersion empty = LatestVersion();
+
+  String get displayLabel {
+    if (label.isNotEmpty) return label;
+    return parseVersionLabel(version);
+  }
+
+  bool get latestBadge => !beta;
 
   factory LatestVersion.fromJson(Map<String, dynamic> j) {
     final Map<String, dynamic> apk = asMap(j['apk']);
@@ -42,6 +63,12 @@ class LatestVersion {
       apkSize: asInt(apk['size']),
       apkUrl: asString(apk['url']),
       apkDirectUrl: asString(apk['directUrl']),
+      label: asString(j['label']),
+      baseVersion: asString(j['baseVersion']),
+      beta: asBool(j['beta']),
+      betaNumber: asInt(j['betaNumber']),
+      force: asBool(j['force']),
+      forceReason: asString(j['forceReason']),
     );
   }
 
@@ -74,6 +101,8 @@ class VersionCheckResult {
     this.minVersion = '',
     this.proxy = '',
     this.checkedAt = '',
+    this.releases = const <LatestVersion>[],
+    this.requiredVersion = '',
   });
 
   final bool ok;
@@ -89,6 +118,10 @@ class VersionCheckResult {
   final String proxy;
   final String checkedAt;
 
+  /// v1.3.0：多版本更新列表（后端顺序，高版本在前）。
+  final List<LatestVersion> releases;
+  final String requiredVersion;
+
   static const VersionCheckResult empty = VersionCheckResult();
 
   factory VersionCheckResult.fromJson(Map<String, dynamic> j) => VersionCheckResult(
@@ -102,5 +135,27 @@ class VersionCheckResult {
         minVersion: asString(j['minVersion']),
         proxy: asString(j['proxy']),
         checkedAt: asString(j['checkedAt']),
+        releases: asMapList(j['releases'])
+            .map(LatestVersion.fromJson)
+            .toList(),
+        requiredVersion: asString(j['requiredVersion']),
       );
+}
+
+
+/// v1.3.0：解析 1.3.1+++Beta 1 / 1.3.1-beta.1，展示为 1.3.1 Beta 1。
+String parseVersionLabel(String version) {
+  final String v = version.trim();
+  if (v.isEmpty) return v;
+  final RegExpMatch? plus = RegExp(
+    r'^(.*?)\+\+\+Beta\s*(\d+)$',
+    caseSensitive: false,
+  ).firstMatch(v);
+  final RegExpMatch? dot = RegExp(
+    r'^(.*?)[-_.]beta[.\s-]*(\d+)$',
+    caseSensitive: false,
+  ).firstMatch(v);
+  final RegExpMatch? hit = plus ?? dot;
+  if (hit == null) return v;
+  return '${hit.group(1)!.trim()} Beta ${hit.group(2)}';
 }

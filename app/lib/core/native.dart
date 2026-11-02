@@ -17,3 +17,19 @@ Future<bool> openExternalUrl(String url) async {
     return false;
   }
 }
+
+/// v1.3.0：应用内下载 APK（Android DownloadManager），失败由调用方回退浏览器。
+Future<bool> downloadApk(String url, String filename) async {
+  if (url.isEmpty) return false;
+  try {
+    final dynamic ok = await _nativeChannel.invokeMethod<dynamic>(
+      'downloadApk',
+      <String, dynamic>{'url': url, 'filename': filename},
+    );
+    return ok == true;
+  } on MissingPluginException {
+    return false;
+  } on PlatformException {
+    return false;
+  }
+}

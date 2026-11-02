@@ -69,6 +69,33 @@ test('版本检查：返回结构完整（GitHub 不可用时也不 5xx）', asy
   }
 });
 
+test('多版本更新：强制版本 + 更高可选版本 + Beta 排序（v1.3.0）', async () => {
+  const { buildUpdateState, compareVersion } = await import('../src/routes/version.js');
+  const releases = [
+    { version: '1.2.5', tag: 'v1.2.5', beta: false, notes: '[force]', apk: {} },
+    { version: '1.3.0+++Beta 1', tag: 'v1.3.0+++Beta1', beta: true, notes: '', apk: {} },
+    { version: '1.3.0', tag: 'v1.3.0', beta: false, notes: '', apk: {} },
+    { version: '1.2.1', tag: 'v1.2.1', beta: false, notes: '', apk: {} },
+  ];
+  assert.equal(compareVersion('1.3.0', '1.3.0+++Beta 1'), 1);
+  assert.equal(compareVersion('1.3.0+++Beta 2', '1.3.0+++Beta 1'), 1);
+  const state = buildUpdateState(releases, '1.2.1', {});
+  assert.equal(state.latest.version, '1.3.0');
+  assert.equal(state.required.version, '1.2.5');
+  assert.equal(state.forceUpdate, true);
+  assert.equal(state.releases.find((r) => r.version === '1.3.0').force, false);
+  const cfgForce = buildUpdateState(releases, '1.2.1', { minVersion: '1.3.0' });
+  assert.equal(cfgForce.required.version, '1.3.0');
+  assert.equal(cfgForce.forceUpdate, true);
+});
+
+test('更新接口：返回多版本列表', async () => {
+  const r = await api('/api/version/updates?current=1.0.0', { auth: false });
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.json.releases));
+  if (r.json.latest) assert.ok(r.json.latest.version);
+});
+
 test('版本更新要求：Release 说明标记解析', async () => {
   const { releaseForcesUpdate } = await import('../src/routes/version.js');
   assert.equal(releaseForcesUpdate('普通更新'), false);
@@ -95,6 +122,7 @@ test('版本更新要求：管理端 update.force 生效', async () => {
   if (check.json.updateAvailable) {
     assert.equal(check.json.forceUpdate, true);
     assert.equal(check.json.forceReason, 'admin');
+    assert.equal(check.json.requiredVersion, check.json.latest.version);
   }
   const cfg = await api('/api/admin/settings', { tokenOverride: adminToken });
   assert.equal(cfg.json.update.force, true);

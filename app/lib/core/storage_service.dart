@@ -13,6 +13,7 @@ class StorageService {
   static const String _kLastCharacter = 'cocoa.lastCharacterId';
   static const String _kLastTab = 'cocoa.lastTab';
   static const String _kIgnoredVersionTag = 'cocoa.ignoredVersionTag';
+  static const String _kUpdateSnoozeDate = 'cocoa.updateSnoozeDate';
 
   Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
 
@@ -110,6 +111,20 @@ class StorageService {
   Future<String?> readIgnoredVersionTag() async {
     final SharedPreferences p = await _prefs;
     return p.getString(_kIgnoredVersionTag);
+  }
+
+  Future<String?> readUpdateSnoozeDate() async {
+    final SharedPreferences p = await _prefs;
+    return p.getString(_kUpdateSnoozeDate);
+  }
+
+  Future<void> writeUpdateSnoozeDate(String? date) async {
+    final SharedPreferences p = await _prefs;
+    if (date == null || date.isEmpty) {
+      await p.remove(_kUpdateSnoozeDate);
+    } else {
+      await p.setString(_kUpdateSnoozeDate, date);
+    }
   }
 
   Future<void> writeIgnoredVersionTag(String? tag) async {

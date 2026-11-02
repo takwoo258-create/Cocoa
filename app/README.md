@@ -77,6 +77,15 @@ lib/
 - 服务地址先测试连接再保存；TTS/STT 测试；更新日志 + / - / ± 统一转换为新增/删除/修改。
 - 默认服务地址改为 HTTPS；版本 1.2.0+4。
 
+## v1.3.0 增量
+
+- 更新系统：`GET /api/version/updates?current=` 多版本列表、Beta 版本（`1.3.0+++Beta 1` / `beta.1` 显示为 `1.3.0 Beta 1`）、requiredVersion、每版本 force/label；更新弹窗/横幅支持版本下拉、可展开详情、应用内 DownloadManager 下载、浏览器下载、今日不再提醒（UTC+8）、下次有更新再提醒；文案只用版本号/「最新版」标签。
+- Android：`cocoa/native` 新增 `downloadApk(url, filename)`，失败回退 `openUrl`。
+- 统一模型：解析 `systemModels/api.providers/modelSource/systemProviderId/providerMeta`；服务配置页支持系统快捷选择、自己的多提供源 CRUD、按服务 activeProvider；首次配置弹窗提供系统模型快捷入口；管理端「服务端配置」增加统一模型开关与系统提供源 CRUD（`****` 保持密钥）。
+- 记忆页 3D：黑底全屏、透视投影、稳定 id 坐标、发光节点/标签/连线、旋转缩放平移、自动旋转暂停、统计卡、底部控制条（缩放/复位/关闭/暂停/下载）、宽屏右侧/窄屏底部详情、RepaintBoundary 截图保存到应用文档目录。
+- 分段增强：一次性 WS 下发的多段按 wait 依次显示，段间「正在输入」三点动画，去重、滚动到底、最后一段关闭 typing。
+- 版本 1.3.0+6。
+
 ## 构建
 
 工具链（本机）：Flutter 3.47.9 / Dart 3.13.7、AGP 9.1.0、Gradle 9.3.1、JDK 17、Android SDK 36。

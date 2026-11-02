@@ -138,9 +138,97 @@ export function invalidateShareCache(userId = null) {
   else shareCache.clear();
 }
 
+export const PROVIDER_SERVICES = ['chat', 'embedding', 'deepseek', 'stt', 'tts'];
+
+const PROVIDER_LABELS = { chat: '对话', embedding: '嵌入', deepseek: 'DeepSeek', stt: '语音识别', tts: '语音合成' };
+
+/** 规范化单个模型提供源；mask=true 时不返回 apiKey 明文 */
+export function normalizeProvider(input = {}, { mask = false } = {}) {
+  const svcModels = {};
+  for (const svc of PROVIDER_SERVICES) {
+    const model = input.models?.[svc] ?? input[svc] ?? '';
+    if (model !== undefined && model !== null && String(model).trim()) svcModels[svc] = String(model).trim();
+  }
+  const apiKey = String(input.apiKey || '');
+  return {
+    id: String(input.id || input.providerId || '').trim().slice(0, 64) || `prov_${Math.random().toString(36).slice(2, 10)}`,
+    name: String(input.name || input.providerName || '未命名模型').trim().slice(0, 60),
+    baseUrl: String(input.baseUrl || '').trim().slice(0, 500),
+    apiKey: mask ? (apiKey ? '****' : '') : apiKey,
+    models: svcModels,
+    voice: String(input.voice || '').trim().slice(0, 100),
+    extra: input.extra && typeof input.extra === 'object' && !Array.isArray(input.extra) ? input.extra : {},
+  };
+}
+
+/** 管理端统一模型配置（含明文 key，仅服务端内部使用） */
+export function getSystemModelsConfig() {
+  const raw = getAdminSetting('system_models', {}) || {};
+  const providers = Array.isArray(raw.providers) ? raw.providers.map((p) => normalizeProvider(p)) : [];
+  return { enabled: Boolean(raw.enabled), providers };
+}
+
+/** 对外展示的统一模型配置（key 掩码） */
+export function getSystemModelsPublic() {
+  const cfg = getSystemModelsConfig();
+  return {
+    enabled: cfg.enabled,
+    providers: cfg.providers.map((p) => ({ ...normalizeProvider(p, { mask: true }), services: Object.keys(p.models) })),
+  };
+}
+
+function providerServiceConfig(provider, svc) {
+  const model = provider.models?.[svc] || '';
+  if (!model) return null;
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model,
+    voice: provider.voice || '',
+    extra: provider.extra || {},
+    providerId: provider.id,
+    providerName: provider.name,
+  };
+}
+
+function pickProvider(providers, preferredId, svc) {
+  const list = Array.isArray(providers) ? providers : [];
+  if (preferredId) {
+    const hit = list.find((p) => p && String(p.id) === String(preferredId));
+    if (hit) return hit;
+  }
+  return list.find((p) => p && p.models && p.models[svc]) || null;
+}
+
 export function getUserApi(userId) {
   const raw = getUserApiRaw(userId);
   const merged = mergeDeep(DEFAULT_API, raw);
+  const systemCfg = getSystemModelsConfig();
+  const usingSystem = raw.modelSource === 'system' && systemCfg.enabled && systemCfg.providers.length > 0;
+  const ownProviders = Array.isArray(raw.providers) ? raw.providers.map((p) => normalizeProvider(p)) : [];
+  const activeMap = raw.activeProviderId && typeof raw.activeProviderId === 'object' ? raw.activeProviderId : {};
+  const providerMeta = {};
+
+  if (usingSystem) {
+    for (const svc of PROVIDER_SERVICES) {
+      const provider = pickProvider(systemCfg.providers, raw.systemProviderId, svc);
+      const conf = provider ? providerServiceConfig(provider, svc) : null;
+      if (conf) {
+        merged[svc] = { ...merged[svc], ...conf };
+        providerMeta[svc] = { source: 'system', providerId: provider.id, providerName: provider.name };
+      }
+    }
+  } else if (ownProviders.length) {
+    for (const svc of PROVIDER_SERVICES) {
+      const provider = pickProvider(ownProviders, activeMap[svc] || activeMap.default, svc);
+      const conf = provider ? providerServiceConfig(provider, svc) : null;
+      if (conf) {
+        merged[svc] = { ...merged[svc], ...conf };
+        providerMeta[svc] = { source: 'own', providerId: provider.id, providerName: provider.name };
+      }
+    }
+  }
+
   // 未配置时回退到部署级默认（嵌入/搜索）
   if (!merged.embedding.apiKey && env.embeddingDefault.apiKey) {
     merged.embedding = { ...merged.embedding, ...env.embeddingDefault };
@@ -155,12 +243,19 @@ export function getUserApi(userId) {
     merged.search = { ...merged.search, apiKey: merged.deepseek.apiKey, baseUrl: merged.deepseek.baseUrl };
   }
 
+  merged.providerMeta = providerMeta;
+  merged.modelSource = usingSystem ? 'system' : (raw.modelSource === 'own' ? 'own' : (raw.modelSource || 'own'));
+  merged.systemProviderId = raw.systemProviderId || '';
+  merged.systemEnabled = systemCfg.enabled;
+  merged.ownProviderCount = ownProviders.length;
+
   // v1.2.0：用户未配置 apiKey 的服务，自动合并有效的他人分享
   const { shared, meta } = getSharedApi(userId);
   const effectiveMeta = {};
   for (const [svc, conf] of Object.entries(shared)) {
     if (merged[svc]?.apiKey) continue;
     merged[svc] = { ...(merged[svc] || {}), ...conf };
+    merged.providerMeta[svc] = { source: 'shared', providerId: meta[svc]?.shareId || '', providerName: meta[svc]?.ownerNickname || '' };
     if (meta[svc]) effectiveMeta[svc] = meta[svc];
   }
   if (!merged.deepseek.apiKey && merged.chat.apiKey && /deepseek/i.test(merged.chat.baseUrl || merged.chat.model || '')) {

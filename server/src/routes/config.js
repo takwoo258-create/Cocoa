@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { requireAuth } from '../auth/middleware.js';
 import { asyncHandler, badRequest } from '../core/errors.js';
 import {
-  getUserApi, saveUserApi, getPrefs, savePrefs, DEFAULT_PREFS,
+  getUserApi, getUserApiRaw, saveUserApi, getPrefs, savePrefs, DEFAULT_PREFS,
+  getSystemModelsPublic, normalizeProvider, PROVIDER_SERVICES,
 } from '../services/settings.js';
 import { listModels, testConnection, resolveModel } from '../ai/provider.js';
 import { describeModel } from '../ai/models.js';
@@ -63,16 +64,51 @@ function sanitizePatch(body) {
   return patch;
 }
 
+function maskProviders(raw) {
+  const list = Array.isArray(raw?.providers) ? raw.providers : [];
+  return list.map((p) => ({
+    ...normalizeProvider(p, { mask: true }),
+    models: normalizeProvider(p).models,
+    apiKeySet: Boolean(p.apiKey),
+    services: Object.keys(normalizeProvider(p).models),
+  }));
+}
+
+function sanitizeProviders(body, raw) {
+  if (!Array.isArray(body?.providers)) return null;
+  if (body.providers.length > 8) throw badRequest('最多配置 8 个模型提供源', 'too_many_providers');
+  const existing = new Map((Array.isArray(raw?.providers) ? raw.providers : []).map((p) => [String(p.id), p]));
+  return body.providers.map((input) => {
+    const id = String(input?.id || '').trim();
+    const prev = existing.get(id);
+    const base = normalizeProvider({ ...(prev || {}), ...input, id }, { mask: false });
+    if (typeof input?.apiKey === 'string') {
+      if (KEEP.has(input.apiKey)) base.apiKey = prev?.apiKey || '';
+      else if (!input.apiKey.trim()) base.apiKey = '';
+      else base.apiKey = input.apiKey.trim();
+    }
+    if (!base.models || !Object.keys(base.models).length) throw badRequest('模型提供源至少配置一个服务模型', 'provider_model_required');
+    return base;
+  });
+}
 export default function register() {
   const r = Router();
   r.use(requireAuth);
 
   r.get('/', (req, res) => {
     const cfg = getUserApi(req.userId);
+    const raw = getUserApiRaw(req.userId);
     const prefs = getPrefs(req.userId);
     const shared = cfg.shared || {};
     res.json({
-      api: maskApi(cfg, shared),
+      api: {
+        ...maskApi(cfg, shared),
+        providers: maskProviders(raw),
+        modelSource: cfg.modelSource || 'own',
+        systemProviderId: cfg.systemProviderId || '',
+        providerMeta: cfg.providerMeta || {},
+      },
+      systemModels: getSystemModelsPublic(),
       preferences: prefs,
       ready: {
         chat: Boolean(cfg.chat.apiKey),
@@ -90,13 +126,32 @@ export default function register() {
   r.put(
     '/api',
     asyncHandler(async (req, res) => {
+      const raw = getUserApiRaw(req.userId);
       const patch = sanitizePatch(req.body || {});
+      const providers = sanitizeProviders(req.body || {}, raw);
+      if (providers) patch.providers = providers;
+      if (req.body?.modelSource === 'system' || req.body?.modelSource === 'own') patch.modelSource = req.body.modelSource;
+      if (typeof req.body?.systemProviderId === 'string') patch.systemProviderId = req.body.systemProviderId.trim().slice(0, 64);
+      if (req.body?.activeProviderId && typeof req.body.activeProviderId === 'object') {
+        const active = {};
+        for (const svc of [...PROVIDER_SERVICES, 'default']) {
+          if (typeof req.body.activeProviderId[svc] === 'string') active[svc] = req.body.activeProviderId[svc].slice(0, 64);
+        }
+        patch.activeProviderId = active;
+      }
       if (!Object.keys(patch).length) throw badRequest('没有可保存的配置项', 'empty_patch');
       const cfg = saveUserApi(req.userId, patch);
       const shared = cfg.shared || {};
       res.json({
         ok: true,
-        api: maskApi(cfg, shared),
+        api: {
+          ...maskApi(cfg, shared),
+          providers: maskProviders(getUserApiRaw(req.userId)),
+          modelSource: cfg.modelSource || 'own',
+          systemProviderId: cfg.systemProviderId || '',
+          providerMeta: cfg.providerMeta || {},
+        },
+        systemModels: getSystemModelsPublic(),
         ready: { chat: Boolean(cfg.chat.apiKey), embedding: Boolean(cfg.embedding.apiKey) },
         shared,
       });
