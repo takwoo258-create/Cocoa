@@ -167,6 +167,7 @@ export function toShare(row, viewerId) {
     seen: Boolean(row.seen),
     canRespond: isParty && status === 'pending' && row.target_id === viewerId,
     canRevoke: isParty && (status === 'pending' || status === 'accepted'),
+    effective: status === 'accepted',
     side: row.owner_id === viewerId ? 'owner' : row.target_id === viewerId ? 'target' : null,
   };
 }
@@ -481,7 +482,8 @@ export function listShares(actorId, box = 'incoming') {
       rows = all("SELECT * FROM model_shares WHERE target_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 200", actorId);
       break;
   }
-  return rows.map((row) => toShare(row, actorId));
+  const items = rows.map((row) => toShare(row, actorId));
+  return box === 'active' ? items.filter((item) => item.effective) : items;
 }
 
 /** 客户端启动弹窗：待我处理（并标记已查看） */

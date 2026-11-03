@@ -505,10 +505,10 @@ test('OneBot：忽略 notice / 输入状态 / 空消息，提示未接入 QQ，Q
   assert.match(agree.body.reply, /已接受模型分享/);
   assert.equal(get('SELECT status FROM model_shares WHERE id = ?', pending.body.share.id).status, 'accepted');
 
-  // bob 自己有 chat 配置：分享不覆盖自有配置，也不展示分享元信息
+  // bob 自己有 chat 配置：分享不覆盖自有配置，但仍应能看到收到的分享来源
   const bobCfg = await api('/api/config', { token: bob.token });
-  assert.equal(bobCfg.body.shared.chat, undefined, '自有配置优先，不展示分享元信息');
-  assert.equal(bobCfg.body.api.chat.shared, null);
+  assert.equal(bobCfg.body.shared.chat.ownerNickname, 'alice', '应展示收到的分享元信息');
+  assert.equal(bobCfg.body.api.chat.shared, null, '自有配置生效时不标记为使用分享');
   assert.equal(getUserApi(bob.id).chat.apiKey, 'sk-bob-secret');
 
   // 已无待办时「同意」按普通消息处理（bob 已接入角色且有配置 → 会走对话，这里只校验不返回 400）

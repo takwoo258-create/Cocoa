@@ -81,12 +81,15 @@ export function sleepMode(settings, date = new Date()) {
 }
 
 /** 固定提示文案（build.md 二.14，每句后追加唤醒风险提示） */
-export function sleepNotice(name, mode) {
+export function sleepNotice(name, mode, date = new Date()) {
   const n = String(name || '角色');
   const normalized = normalizeSleepState(mode) || mode;
-  if (normalized === 'napping') return `${n}在休息哦，要稍后再来找他/她吧 ${SLEEP_SUFFIX}`;
-  if (normalized === 'sleeping') return `夜深了，明天再来找他/她吧，你也要早点睡哦 ${SLEEP_SUFFIX}`;
-  return '';
+  if (!normalized || normalized === 'awake') return '';
+  // 白天小睡/补觉不要说成“夜深了”：按 UTC+8 当前小时判断
+  const hour = new Date(new Date(date).getTime() + 8 * 3600_000).getUTCHours();
+  const night = hour >= 21 || hour < 6;
+  if (normalized === 'sleeping' && night) return `夜深了，明天再来找他/她吧，你也要早点睡哦 ${SLEEP_SUFFIX}`;
+  return `${n}在休息哦，要稍后再来找他/她吧 ${SLEEP_SUFFIX}`;
 }
 
 /** 是否处于需要拒绝发送的休息状态（v1.2.0：以模型写入的 state.sleep_state 为准） */

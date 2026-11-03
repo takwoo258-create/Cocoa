@@ -539,27 +539,41 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
   const segments = (parsed.segments || []).filter((s) => String(s.content || '').trim());
   if (!segments.length) return { ok: false, sent: false, reason: 'empty_reply' };
 
-  const wantsVoice = voiceReply == null ? detectVoiceReply(userId, conversation.id) : Boolean(voiceReply);
+  const prefs = getPrefs(userId);
+  const voiceMode = String(prefs.voiceReplyMode || 'auto').toLowerCase();
+  const autoVoice = voiceReply == null ? detectVoiceReply(userId, conversation.id) : Boolean(voiceReply);
+  const wantsVoice = voiceMode === 'always' ? true : voiceMode === 'off' ? false : autoVoice;
   const fullText = String(parsed.content || segments.map((s) => s.content).join('')).trim();
   const voice = wantsVoice ? await maybeSynthesize({ userId, characterId, text: fullText }) : null;
+  const outSegments = voice ? [{ content: fullText, wait: 0 }] : segments;
 
   const thinkingText = String(reasoning || '').trim().slice(0, 4_000);
   const meta = {
     segment: 1,
-    segments: segments.length,
-    wait: segments[0].wait || 0,
+    segments: outSegments.length,
+    wait: outSegments[0].wait || 0,
     thinkingMode: Boolean(thinking),
     ...(thinkingText ? { thinking: thinkingText } : {}),
     reason,
-    ...(voice ? { voiceMediaId: voice.id, voiceUrl: voice.url, voiceMime: voice.mime } : {}),
+    ...(voice
+      ? {
+          mediaId: voice.id,
+          url: voice.url,
+          mime: voice.mime,
+          transcript: fullText,
+          voiceMediaId: voice.id,
+          voiceUrl: voice.url,
+          voiceMime: voice.mime,
+        }
+      : {}),
   };
   const row = persistMessage({
     userId,
     characterId,
     conversationId: conversation.id,
     role: 'agent',
-    kind: 'text',
-    content: segments[0].content,
+    kind: voice ? 'voice' : 'text',
+    content: outSegments[0].content,
     meta,
     tokensOut: estimateTextTokens(segments[0].content),
   });
@@ -567,11 +581,11 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
 
   // v1.2.1：分段一次性推送，客户端按每段 wait 依次显示。
   // 旧实现用调度任务（30s 轮询）会严重延迟甚至丢段，导致“分段未实现”。
-  for (let i = 1; i < segments.length; i++) {
+  for (let i = 1; i < outSegments.length; i++) {
     const segmentMeta = {
       segment: i + 1,
-      segments: segments.length,
-      wait: clamp(segments[i].wait || 0, 0, 8),
+      segments: outSegments.length,
+      wait: clamp(outSegments[i].wait || 0, 0, 8),
       thinkingMode: Boolean(thinking),
       reason,
     };
@@ -581,9 +595,9 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
       conversationId: conversation.id,
       role: 'agent',
       kind: 'text',
-      content: segments[i].content,
+      content: outSegments[i].content,
       meta: segmentMeta,
-      tokensOut: estimateTextTokens(segments[i].content),
+      tokensOut: estimateTextTokens(outSegments[i].content),
       createdAt: new Date(Date.now() + i * 2).toISOString(),
     });
     broadcastMessage(userId, characterId, segRow);
@@ -596,7 +610,7 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
     sent: true,
     messageId: row.id,
     content: fullText,
-    segments: segments.length,
+    segments: outSegments.length,
     thinking: Boolean(thinking),
     thinkingText: thinkingText || null,
     voiceMediaId: voice?.id || null,

@@ -28,6 +28,7 @@ const DEFAULT_PREFS = {
   limits: { enabled: true, hardTokens: 0, softTokens: 0 },
   contextLimits: {}, // { "gpt-4o-mini": 128000, "default": 65536 }
   segmentEnabled: true,
+  voiceReplyMode: 'auto', // auto=仅收到语音时；always=每条都发语音；off=关闭
   language: 'zh-CN',
 };
 
@@ -264,8 +265,10 @@ export function getUserApi(userId) {
   if (!merged.search.apiKey && merged.deepseek.apiKey) {
     merged.search = { ...merged.search, apiKey: merged.deepseek.apiKey, baseUrl: merged.deepseek.baseUrl };
   }
-  // 元信息（不含 apiKey），供 GET /api/config 展示；仅包含实际生效的分享服务
-  merged.shared = effectiveMeta;
+  // 元信息（不含 apiKey），供 GET /api/config 展示：
+  // shared = 所有生效中的分享（即使自己有配置也要让用户看见来源）；sharedUsed = 实际被采用的分享
+  merged.shared = meta;
+  merged.sharedUsed = effectiveMeta;
   return merged;
 }
 

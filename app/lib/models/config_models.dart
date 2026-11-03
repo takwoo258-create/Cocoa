@@ -110,6 +110,9 @@ class AppConfig {
   bool get thinking => asBool(preferences['thinking']);
   bool get activeReply => asBool(preferences['activeReply'], true);
   bool get segmentEnabled => asBool(preferences['segmentEnabled'], true);
+
+  /// v1.3.1：语音回复模式 auto/always/off。
+  String get voiceReplyMode => asString(preferences['voiceReplyMode'], 'auto');
   Map<String, String> get modelRouting => asStringMap(preferences['modelRouting']);
   int get hardTokens => asInt(asMap(preferences['limits'])['hardTokens']);
   int get softTokens => asInt(asMap(preferences['limits'])['softTokens']);

@@ -68,13 +68,16 @@ class ChatMessage {
   }
 
   String? get mediaId {
-    final dynamic v = meta['mediaId'] ?? meta['media_id'];
+    final dynamic v = meta['mediaId'] ?? meta['media_id'] ?? meta['voiceMediaId'];
     if (v == null) return null;
     final String s = v.toString();
     return s.isEmpty ? null : s;
   }
 
-  String? get mediaUrl => asStringOrNull(meta['url']) ?? asStringOrNull(meta['mediaUrl']);
+  String? get mediaUrl =>
+      asStringOrNull(meta['url']) ??
+      asStringOrNull(meta['mediaUrl']) ??
+      asStringOrNull(meta['voiceUrl']);
 
   ChatMessage copyWith({
     String? id,

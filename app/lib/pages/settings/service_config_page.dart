@@ -27,6 +27,7 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
   Map<String, String> _active = <String, String>{};
   bool _initialized = false;
   bool _saving = false;
+  String _voiceMode = 'auto';
 
   @override
   void initState() {
@@ -44,6 +45,7 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
       _active = Map<String, String>.of(
         cfg?.activeProviderId ?? const <String, String>{},
       );
+      _voiceMode = cfg?.voiceReplyMode ?? 'auto';
       _initialized = true;
     });
   }
@@ -63,6 +65,56 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
       default:
         return cfg.configured;
     }
+  }
+
+  Future<void> _saveVoiceMode(String mode) async {
+    final AppState state = AppScope.read(context);
+    setState(() => _voiceMode = mode);
+    try {
+      await state.configService.savePreferences(<String, dynamic>{
+        'voiceReplyMode': mode,
+      });
+      await state.refreshConfig();
+      if (mounted) showToast('语音回复设置已保存');
+    } catch (e) {
+      if (mounted) showToast('保存失败：$e', isError: true);
+    }
+  }
+
+  Widget _voiceReplyCard() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.sand.withAlpha(90),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: <Widget>[
+          const Icon(Icons.record_voice_over_outlined, size: 17),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              '语音回复',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ),
+          DropdownButton<String>(
+            value: _voiceMode,
+            underline: const SizedBox.shrink(),
+            style: const TextStyle(fontSize: 12, color: AppColors.ink),
+            items: const <DropdownMenuItem<String>>[
+              DropdownMenuItem<String>(value: 'auto', child: Text('仅语音消息')),
+              DropdownMenuItem<String>(value: 'always', child: Text('始终发送语音')),
+              DropdownMenuItem<String>(value: 'off', child: Text('关闭')),
+            ],
+            onChanged: (String? value) {
+              if (value != null) _saveVoiceMode(value);
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _saveSources() async {
@@ -450,6 +502,7 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                     child: Column(
                       children: <Widget>[
+                        if (service == 'tts') _voiceReplyCard(),
                         if (service == 'tts' || service == 'stt')
                           VoiceTestPanel(service: service),
                         ServiceEditor(

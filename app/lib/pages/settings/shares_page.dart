@@ -19,8 +19,8 @@ class SharesPage extends StatefulWidget {
 
 class _SharesPageState extends State<SharesPage>
     with SingleTickerProviderStateMixin {
-  static const List<String> _boxes = <String>['outgoing', 'incoming', 'pending'];
-  static const List<String> _titles = <String>['我的分享', '收到的分享', '待处理'];
+  static const List<String> _boxes = <String>['active', 'incoming', 'outgoing', 'history'];
+  static const List<String> _titles = <String>['生效中', '收到的分享', '我的分享', '历史'];
 
   late final TabController _tab;
   final Map<String, List<ModelShare>> _data = <String, List<ModelShare>>{};
@@ -115,16 +115,17 @@ class _SharesPageState extends State<SharesPage>
 
   Widget _shareCard(ModelShare share, String box) {
     final bool request = share.direction == 'request' || share.direction == 'incoming';
-    final bool incoming = box == 'incoming' || request;
-    final String other =
-        box == 'outgoing' ? share.target.label : share.owner.label;
+    final bool incoming = share.side.isNotEmpty ? share.side == 'target' : (box == 'incoming' || request);
+    final String other = incoming ? share.owner.label : share.target.label;
     final String relation;
-    if (box == 'incoming') {
-      relation = request ? '$other 向你索要' : '来自 $other';
-    } else if (box == 'outgoing') {
-      relation = request ? '向 $other 索要' : '分享给 $other';
+    if (request && incoming) {
+      relation = '$other 向你索要';
+    } else if (request) {
+      relation = '向 $other 索要';
+    } else if (incoming) {
+      relation = '来自 $other';
     } else {
-      relation = request ? '$other 向你索要' : '来自 $other';
+      relation = '分享给 $other';
     }
     final List<String> serviceLabels = share.services
         .map((String s) => kServiceLabels[s] ?? s)
@@ -223,8 +224,7 @@ class _SharesPageState extends State<SharesPage>
               ],
             ),
           ],
-          if (box == 'outgoing' &&
-              (share.isPending || share.isAccepted)) ...<Widget>[
+          if (share.canRevoke && (share.isPending || share.isAccepted)) ...<Widget>[
             const SizedBox(height: 6),
             Align(
               alignment: Alignment.centerRight,
@@ -251,9 +251,11 @@ class _SharesPageState extends State<SharesPage>
     final List<ModelShare> items = _data[box] ?? const <ModelShare>[];
     if (items.isEmpty) {
       return EmptyView(
-        text: box == 'pending'
-            ? '没有待处理的分享请求'
-            : '还没有${_titles[_boxes.indexOf(box)]}',
+        text: box == 'active'
+            ? '暂无生效中的分享'
+            : box == 'incoming'
+                ? '没有待处理的分享请求'
+                : '还没有${_titles[_boxes.indexOf(box)]}',
         icon: Icons.swap_horiz,
       );
     }

@@ -100,9 +100,10 @@ export default function register() {
     const raw = getUserApiRaw(req.userId);
     const prefs = getPrefs(req.userId);
     const shared = cfg.shared || {};
+    const sharedUsed = cfg.sharedUsed || {};
     res.json({
       api: {
-        ...maskApi(cfg, shared),
+        ...maskApi(cfg, sharedUsed),
         providers: maskProviders(raw),
         modelSource: cfg.modelSource || 'own',
         systemProviderId: cfg.systemProviderId || '',
@@ -142,10 +143,11 @@ export default function register() {
       if (!Object.keys(patch).length) throw badRequest('没有可保存的配置项', 'empty_patch');
       const cfg = saveUserApi(req.userId, patch);
       const shared = cfg.shared || {};
+      const sharedUsed = cfg.sharedUsed || {};
       res.json({
         ok: true,
         api: {
-          ...maskApi(cfg, shared),
+          ...maskApi(cfg, sharedUsed),
           providers: maskProviders(getUserApiRaw(req.userId)),
           modelSource: cfg.modelSource || 'own',
           systemProviderId: cfg.systemProviderId || '',

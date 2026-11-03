@@ -364,7 +364,7 @@ test('status: 作息判定（跨零点睡眠、午睡、关闭）与固定文案
   const nap = status.sleepNotice('可可', 'nap');
   assert.ok(nap.includes('可可在休息哦，要稍后再来找他/她吧'));
   assert.ok(nap.includes('若强行叫醒的话，可能会带来不必要的麻烦哦'));
-  const night = status.sleepNotice('可可', 'sleep');
+  const night = status.sleepNotice('可可', 'sleep', new Date('2026-11-01T23:00:00+08:00'));
   assert.ok(night.includes('夜深了，明天再来找他/她吧，你也要早点睡哦'));
   assert.ok(night.includes('若强行叫醒的话，可能会带来不必要的麻烦哦'));
   assert.equal(status.sleepNotice('可可', 'awake'), '');
@@ -698,6 +698,22 @@ test('chat: JSON 连续失败后纯文本兜底成功（v1.2.1）', { timeout: 2
   assert.equal(agent.plain, '我在呢，刚刚在收拾杯子。');
 });
 
+test('chat: 语音回复始终模式 → 落库 voice 消息并带音频 URL（v1.3.1）', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  savePrefs(userId, { voiceReplyMode: 'always' });
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '给我发条语音' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true);
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.kind, 'voice', 'TTS 成功时应落库为语音消息');
+  assert.ok(String(agent.meta.mediaId || '').startsWith('md_'));
+  assert.ok(String(agent.meta.url || '').startsWith('/api/media/'));
+  assert.ok(String(agent.meta.mime || '').includes('audio'));
+  savePrefs(userId, { voiceReplyMode: 'auto' });
+});
+
 test('chat: 单段长回复自动拆分为分段消息（v1.2.1）', { timeout: 20_000 }, async () => {
   const character = freshCharacter();
   const text = '今天在花店忙了一整天，把新到的向日葵都摆好了。回来的时候路过你喜欢的那家面包店，顺手买了两个可颂。你今晚有空过来吗？';
@@ -925,7 +941,7 @@ test('active: 模型睡眠状态命中时拒绝发送并返回固定文案，wak
   const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '睡了吗' });
   assert.equal(out.accepted, false);
   assert.equal(out.reason, 'sleep');
-  assert.ok(out.notice.includes('夜深了，明天再来找他/她吧，你也要早点睡哦'));
+  assert.ok(out.notice.includes('在休息哦') || out.notice.includes('夜深了'), '白天休息不应强制夜间文案');
   assert.ok(out.notice.includes('若强行叫醒的话，可能会带来不必要的麻烦哦'));
   assert.equal(out.userMessage.content, '睡了吗');
 

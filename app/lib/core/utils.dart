@@ -71,13 +71,28 @@ String formatBytes(num bytes) {
 String rangeLabel(String range) => kRangeLabels[range] ?? range;
 
 String sleepHint(String name, String sleepState) {
-  if (sleepState == 'sleep') {
+  final String mode = normalizeSleepState(sleepState);
+  if (mode == 'awake') return '';
+  // 白天休息不显示夜间文案（服务端 v1.2.0 起使用 napping/sleeping）
+  final int hour = DateTime.now().toUtc().add(const Duration(hours: 8)).hour;
+  final bool night = hour >= 21 || hour < 6;
+  if (mode == 'sleeping' && night) {
     return '夜深了，明天再来找他/她吧，你也要早点睡哦。$kForceWakeSuffix';
   }
-  if (sleepState == 'nap') {
-    return '$name在休息哦，要稍后再来找他/她吧。$kForceWakeSuffix';
+  return '$name在休息哦，要稍后再来找他/她吧。$kForceWakeSuffix';
+}
+
+String normalizeSleepState(String value) {
+  switch (value) {
+    case 'sleep':
+    case 'sleeping':
+      return 'sleeping';
+    case 'nap':
+    case 'napping':
+      return 'napping';
+    default:
+      return 'awake';
   }
-  return '';
 }
 
 String greeting() {

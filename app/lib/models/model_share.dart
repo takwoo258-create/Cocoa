@@ -87,6 +87,9 @@ class ModelShare {
     this.note = '',
     this.createdAt = '',
     this.canRespond = false,
+    this.canRevoke = false,
+    this.side = '',
+    this.effective = false,
   });
 
   final String id;
@@ -105,6 +108,9 @@ class ModelShare {
   final String note;
   final String createdAt;
   final bool canRespond;
+  final bool canRevoke;
+  final String side;
+  final bool effective;
 
   bool get isPending => status == 'pending';
   bool get isAccepted => status == 'accepted';
@@ -115,7 +121,7 @@ class ModelShare {
       case 'pending':
         return '待处理';
       case 'accepted':
-        return '已接受';
+        return effective ? '生效中' : '已接受';
       case 'rejected':
         return '已拒绝';
       case 'revoked':
@@ -162,5 +168,8 @@ class ModelShare {
         note: asString(j['note']),
         createdAt: asString(j['createdAt']),
         canRespond: asBool(j['canRespond']),
+        canRevoke: asBool(j['canRevoke']),
+        side: asString(j['side']),
+        effective: asBool(j['effective']) || asString(j['status']) == 'accepted',
       );
 }

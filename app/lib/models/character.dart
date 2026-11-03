@@ -26,16 +26,18 @@ class CharacterState {
 
   static const CharacterState empty = CharacterState();
 
-  bool get sleeping => sleepState == 'sleep';
-  bool get napping => sleepState == 'nap';
+  bool get sleeping => sleepState == 'sleep' || sleepState == 'sleeping';
+  bool get napping => sleepState == 'nap' || sleepState == 'napping';
   bool get resting => sleeping || napping;
 
   String get sleepLabel {
     switch (sleepState) {
       case 'sleep':
+      case 'sleeping':
         return '睡眠中';
       case 'nap':
-        return '午睡中';
+      case 'napping':
+        return '休息中';
       default:
         return '清醒';
     }
