@@ -4,15 +4,16 @@
 //   记忆线动态处理器：portrait(_run) / memory(_extract) / news(_run) / creation(_run)
 // 记忆线模块尚未就绪时跳过任务，不阻塞调度循环。
 import logger from '../core/logger.js';
-import { all, get } from '../db/index.js';
+import { all, get, getMeta, setMeta } from '../db/index.js';
 import { dayKey } from '../core/util.js';
 import { decryptText } from '../core/crypto.js';
 import { enqueue, dueJobs, jobPayload, markJob } from '../services/jobs.js';
 import { getSettings, getCharacter, ensureState } from '../services/characters.js';
 import { limitState, isCompressing } from './context.js';
+import { isCharacterActiveById } from './activity.js';
 import { refreshStatus, bootstrapStatusJobs, effectiveSleep } from './status.js';
 import { handleActiveReplyJob } from './active.js';
-import { getChatProvider, handleSegmentSend, handleSentenceWait, handleWakeJudge, runCompression, runGeneration, isGenerating } from './chat.js';
+import { getChatProvider, handleSegmentSend, handleSentenceWait, handleWakeJudge, runCompression, runGeneration, isGenerating, applyIntimacy } from './chat.js';
 
 export const POLL_INTERVAL_MS = 30_000;
 export const PORTRAIT_INTERVAL_MS = 24 * 3600_000;
@@ -24,6 +25,21 @@ let timer = null;
 let ticking = false;
 let tickCount = 0;
 const customHandlers = new Map();
+let memoryBootstrapCalls = 0;
+
+/** 记忆线维护（补 embedding / 记忆 / 画像 / 新闻 / 创作巡检）；失败不影响调度 */
+export async function runMemoryBootstrap() {
+  try {
+    const mod = await import('./memory.js');
+    if (typeof mod.bootstrapAiMemoryJobs !== 'function') return { ok: false, reason: 'export_missing' };
+    const out = await mod.bootstrapAiMemoryJobs();
+    memoryBootstrapCalls += 1;
+    return { ok: true, out };
+  } catch (err) {
+    logger.warn('记忆线巡检失败', err?.message || err);
+    return { ok: false, reason: 'error', error: err?.message || String(err) };
+  }
+}
 
 // 记忆线（ai-memory）提供的处理器：模块不存在 / 导出缺失时跳过
 const MEMORY_HANDLERS = {
@@ -219,6 +235,7 @@ export async function bootstrapPeriodicJobs({ now = Date.now(), maxCharacters = 
     const characterId = row.id;
     const userId = row.user_id;
     try {
+      if (!isCharacterActiveById(userId, characterId)) continue;
       const limits = limitsFor(userId);
       if (limits.hardLimited) continue;
 
@@ -242,7 +259,7 @@ export async function bootstrapPeriodicJobs({ now = Date.now(), maxCharacters = 
         const last = lastJobAt(characterId, 'news');
         if (now - last >= NEWS_INTERVAL_MS) {
           const due = Math.max(now, last + NEWS_INTERVAL_MS);
-          enqueue('news_read', new Date(due).toISOString(), { characterId }, { userId, characterId });
+          enqueue('news', new Date(due).toISOString(), { characterId }, { userId, characterId });
           out.news++;
         }
       }
@@ -294,6 +311,11 @@ export function registerHandler(type, fn) {
 export async function dispatchJob(job) {
   if (!job || !job.id) return { ok: false, type: 'unknown', jobId: null, error: 'invalid_job' };
   const payload = jobPayload(job);
+  // v1.5.0：角色关闭运行后，所有已入队任务在执行时再检查一次
+  if (job.character_id && !isCharacterActiveById(job.user_id, job.character_id)) {
+    markJob(job.id, 'skipped');
+    return { ok: false, type: job.type, jobId: job.id, status: 'skipped', result: { reason: 'character_disabled' } };
+  }
   markJob(job.id, 'running');
   try {
     let result;
@@ -316,6 +338,52 @@ export async function dispatchJob(job) {
     }
     return { ok: false, type: job.type, jobId: job.id, status: 'failed', error: err?.message || String(err) };
   }
+}
+
+// ---------------- 亲密度衰减（v1.5.0） ----------------
+
+const DAY_MS = 86_400_000;
+
+/** 7 天无对话后，每日按 -0.5 衰减（最低 0），并写 intimacy_log(source='decay') */
+export async function runIntimacyDecay({ now = Date.now() } = {}) {
+  const today = dayKey(new Date(now));
+  const rows = all('SELECT id, user_id FROM characters WHERE archived = 0');
+  let applied = 0;
+  for (const row of rows) {
+    const characterId = row.id;
+    const userId = row.user_id;
+    try {
+      if (!isCharacterActiveById(userId, characterId)) continue;
+      const guardKey = `intimacy:decay:${characterId}`;
+      if (getMeta(guardKey, null) === today) continue;
+      const last = get(
+        "SELECT MAX(created_at) AS m FROM messages WHERE user_id = ? AND character_id = ? AND role IN ('user','agent')",
+        userId,
+        characterId,
+      );
+      setMeta(guardKey, today);
+      if (!last?.m) continue;
+      const idleMs = now - Date.parse(last.m);
+      if (!Number.isFinite(idleMs) || idleMs < 7 * DAY_MS) continue;
+      const lastDecayKey = `intimacy:last_decay:${characterId}`;
+      const lastDecayAt = Date.parse(getMeta(lastDecayKey, '') || '') || Date.parse(last.m);
+      const sinceLast = Math.floor((now - lastDecayAt) / DAY_MS);
+      const eligible = Math.floor(idleMs / DAY_MS) - 6;
+      const days = Math.max(1, Math.min(30, Math.min(sinceLast || 1, Math.max(1, eligible))));
+      const before = Number(ensureStateIntimacy(userId, characterId)) || 0;
+      const after = applyIntimacy({ userId, characterId, delta: -0.5 * days, source: 'decay', broadcastState: true });
+      setMeta(lastDecayKey, new Date(now).toISOString());
+      if (after != null && after !== before) applied += 1;
+    } catch (err) {
+      logger.warn('亲密度衰减失败', characterId, err?.message || err);
+    }
+  }
+  return { applied };
+}
+
+function ensureStateIntimacy(userId, characterId) {
+  const row = get('SELECT intimacy FROM character_state WHERE character_id = ?', characterId);
+  return row?.intimacy ?? 0;
 }
 
 // ---------------- 回复看门狗（v1.0.1） ----------------
@@ -367,6 +435,7 @@ export async function runWatchdog({ now = Date.now(), max = WATCHDOG_MAX_PER_TIC
       out.skipped += 1;
       continue;
     }
+    if (!isCharacterActiveById(conv.user_id, conv.character_id)) continue;
     if (isCompressing(conv.id) || isGenerating(conv.user_id, conv.character_id)) {
       out.skipped += 1;
       continue;
@@ -423,12 +492,25 @@ export async function tick({ limit = 20, sweep = true } = {}) {
         logger.warn('周期任务巡检失败', err?.message || err);
       }
       if (tickCount % 10 === 1) {
+        // 每 10 轮（约 5 分钟）+ 启动首轮：记忆线维护
+        try {
+          const mem = await runMemoryBootstrap();
+          if (mem.ok) logger.debug('记忆线巡检', mem.out);
+        } catch (err) {
+          logger.warn('记忆线巡检异常', err?.message || err);
+        }
         try {
           const boot = bootstrapStatusJobs();
           if (boot.scheduled) logger.info('状态任务补排', boot.scheduled);
         } catch (err) {
           logger.warn('状态任务补排失败', err?.message || err);
         }
+      }
+      try {
+        const decay = await runIntimacyDecay({ now: Date.now() });
+        if (decay.applied) logger.info('亲密度衰减', decay);
+      } catch (err) {
+        logger.warn('亲密度衰减巡检失败', err?.message || err);
       }
       try {
         const watchdog = await runWatchdog({ now: Date.now() });
@@ -469,4 +551,4 @@ export function schedulerState() {
   return { running: Boolean(timer), ticking, tickCount, pollMs: POLL_INTERVAL_MS };
 }
 
-export default { startScheduler, stopScheduler, tick, dispatchJob, registerHandler, schedulerState, bootstrapPeriodicJobs, runWatchdog, resetWatchdogSeen, nextDailyUtc8, nextHourUtc8, todayUtc8At };
+export default { startScheduler, stopScheduler, tick, dispatchJob, registerHandler, schedulerState, bootstrapPeriodicJobs, runWatchdog, resetWatchdogSeen, runIntimacyDecay, runMemoryBootstrap, nextDailyUtc8, nextHourUtc8, todayUtc8At };

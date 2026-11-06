@@ -133,7 +133,15 @@ async function awaitReply(mod, out) {
   const waited = await wait(out.waitForReply, timeoutMs, { ok: false, reason: 'timeout' });
   const hardLimit = mod.NOTICES?.hardLimit || 'Token 已达硬性限额，角色服务已暂停';
   const reply = waited?.sent ? String(waited.content || '') : waited?.reason === 'hard_limit' ? hardLimit : '';
-  return { reply, reason: waited?.reason || (waited?.sent ? 'replied' : 'no_reply') };
+  const rawSegments = Array.isArray(waited?.parsed?.segments) ? waited.parsed.segments : [];
+  const segments = rawSegments
+    .map((seg) => ({
+      content: String(seg?.content || '').trim(),
+      sendsec: Math.min(20, Math.max(1, Math.round(Number(seg?.sendsec) || 0) || 1)),
+      wait: Number(seg?.wait) || 0,
+    }))
+    .filter((seg) => seg.content);
+  return { reply, reason: waited?.reason || (waited?.sent ? 'replied' : 'no_reply'), segments };
 }
 
 /**
@@ -240,12 +248,13 @@ export async function handleIncomingEvent(event) {
           meta: { source: 'onebot', qq, messageType, characterId: bound.id },
           source: 'onebot',
         })) || {};
-      const { reply, reason } = await awaitReply(mod, out);
+      const { reply, reason, segments } = await awaitReply(mod, out);
       return {
         ok: out.accepted !== false,
         status: 200,
         reason,
         reply: reply || null,
+        segments: segments && segments.length ? segments : null,
         notice: out.notice || null,
         accepted: out.accepted !== false,
         queued: Boolean(out.queued),
@@ -262,6 +271,7 @@ export async function handleIncomingEvent(event) {
         status: out.status || 200,
         reason: out.reason || null,
         reply: out.reply || null,
+        segments: Array.isArray(out.segments) && out.segments.length ? out.segments : null,
         notice: out.notice || null,
         accepted: out.accepted !== false,
         userId: user.id,

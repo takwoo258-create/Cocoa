@@ -30,6 +30,7 @@ class _StatsPageState extends State<StatsPage> {
   IntimacyResult _intimacy = IntimacyResult.empty;
   CharacterOverview _overview = CharacterOverview.empty;
   String? _modelFilter;
+  int _page = 0;
 
   @override
   void initState() {
@@ -277,10 +278,17 @@ class _StatsPageState extends State<StatsPage> {
         children: <Widget>[
           Row(
             children: <Widget>[
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  value: _usage.totals.total > 0
+                      ? (value / _usage.totals.total).clamp(0.0, 1.0)
+                      : 0,
+                  strokeWidth: 3,
+                  backgroundColor: Colors.white.withAlpha(50),
+                  color: color,
+                ),
               ),
               const SizedBox(width: 5),
               Text(
@@ -303,6 +311,51 @@ class _StatsPageState extends State<StatsPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget? _filterBar() {
+    final List<ModelUsage> models = _usage.models;
+    if (models.isEmpty) return null;
+    return Row(
+      children: <Widget>[
+        const Icon(Icons.filter_alt_outlined, size: 16, color: AppColors.cocoa),
+        const SizedBox(width: 4),
+        const Text('模型筛选', style: TextStyle(fontSize: 11)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: DropdownButton<String>(
+            value: _modelFilter,
+            isExpanded: true,
+            hint: const Text('全部模型', style: TextStyle(fontSize: 11)),
+            items: models
+                .map(
+                  (ModelUsage m) => DropdownMenuItem<String>(
+                    value: m.model,
+                    child: Text(
+                      m.model,
+                      style: const TextStyle(fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: (String? v) {
+              setState(() => _modelFilter = v);
+              _load();
+            },
+          ),
+        ),
+        if (_modelFilter != null)
+          IconButton(
+            tooltip: '清除筛选',
+            icon: const Icon(Icons.clear, size: 17),
+            onPressed: () {
+              setState(() => _modelFilter = null);
+              _load();
+            },
+          ),
+      ],
     );
   }
 
@@ -389,7 +442,22 @@ class _StatsPageState extends State<StatsPage> {
           ),
           barTouchData: BarTouchData(
             enabled: true,
-            handleBuiltInTouches: false,
+            handleBuiltInTouches: true,
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (BarChartGroupData group) => AppColors.ink,
+              getTooltipItem: (
+                BarChartGroupData group,
+                int groupIndex,
+                BarChartRodData rod,
+                int rodIndex,
+              ) {
+                final UsagePoint point = series[group.x];
+                return BarTooltipItem(
+                  '${point.key}\n${compactNumber(point.total)} tokens · ${formatCost(point.cost)}',
+                  const TextStyle(color: Colors.white, fontSize: 10),
+                );
+              },
+            ),
             touchCallback: (FlTouchEvent event, BarTouchResponse? response) {
               if (event is! FlTapUpEvent) return;
               final int? index = response?.spot?.touchedBarGroupIndex;
@@ -825,7 +893,6 @@ class _StatsPageState extends State<StatsPage> {
         ],
       );
     }
-    final bool wide = MediaQuery.sizeOf(context).width >= 700;
     final Widget usageCard = SectionCard(
       title: '用量柱状图',
       trailing: const Text(
@@ -846,35 +913,33 @@ class _StatsPageState extends State<StatsPage> {
           _characterBar(),
           const SizedBox(height: 4),
           _rangeBar(),
-          _tokenCards(),
-          if (wide)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Expanded(child: usageCard),
-                const SizedBox(width: 8),
-                Expanded(child: intimacyCard),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: SegmentedButton<int>(
+              segments: const <ButtonSegment<int>>[
+                ButtonSegment<int>(value: 0, label: Text('模型消耗')),
+                ButtonSegment<int>(value: 1, label: Text('陪伴天数')),
               ],
-            )
-          else ...<Widget>[usageCard, intimacyCard],
-          _companionBanner(),
-          if (wide)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Expanded(child: _overviewGrid()),
-                const SizedBox(width: 8),
-                Expanded(child: _modelsSection()),
-              ],
-            )
-          else ...<Widget>[
-            const SizedBox(height: 4),
-            _overviewGrid(),
-            const SizedBox(height: 6),
+              selected: <int>{_page},
+              onSelectionChanged: (Set<int> v) =>
+                  setState(() => _page = v.first),
+            ),
+          ),
+          if (_filterBar() != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: _filterBar()!,
+            ),
+          if (_page == 0) ...<Widget>[
+            _tokenCards(),
+            usageCard,
             _modelsSection(),
+            _callsSection(),
+          ] else ...<Widget>[
+            _companionBanner(),
+            intimacyCard,
+            _overviewGrid(),
           ],
-          const SizedBox(height: 6),
-          _callsSection(),
         ],
       ),
     );

@@ -13,11 +13,13 @@ import {
   getAdminSetting, setAdminSetting, getSmtpConfig, getOnebotConfig, mergeDeep,
   getSystemModelsConfig, getSystemModelsPublic, normalizeProvider,
 } from '../services/settings.js';
-import { sendMail } from '../mail/sender.js';
+import { sendMail, MAIL_TEMPLATE_KINDS } from '../mail/sender.js';
+import { listBans, createBan, deleteBan } from '../services/plaza.js';
+import { connectionCount } from '../realtime/hub.js';
 import { usageFor } from './stats.js';
 import { onebotStatus } from '../onebot/server.js';
 import { collectServerStatus } from '../services/server-status.js';
-import { fetchVersions, startUpgrade, upgradeStatus } from '../services/upgrade.js';
+import { fetchVersions, startUpgrade, upgradeStatus, currentVersion } from '../services/upgrade.js';
 import env from '../env.js';
 
 const KEEP = new Set(['****', '••••••••', '[REDACTED]', 'unchanged']);
@@ -332,11 +334,13 @@ export default function register() {
   // ---------- 用量（支持单用户筛选） ----------
   r.get('/usage', (req, res) => {
     const userId = req.query.userId ? String(req.query.userId) : null;
-    if (userId && !get('SELECT id FROM users WHERE id = ?', userId)) throw notFound('用户不存在', 'user_not_found');
-    const data = usageFor({ userId, query: req.query });
+    // 找不到用户时返回空结果（管理端筛选常带临时 ID，不应中断页面）
+    const user = userId ? get('SELECT id, code, username, email FROM users WHERE id = ?', userId) : null;
+    const data = usageFor({ userId: userId || null, query: req.query });
     res.json({
       ...data,
       userId,
+      user: user || null,
       byUser: userId ? undefined : usageByUser(data.from, data.to, data.model),
     });
   });
@@ -345,11 +349,30 @@ export default function register() {
   r.get('/conversations', (req, res) => {
     const { page, size, offset } = paging(req.query);
     const userId = req.query.userId ? String(req.query.userId) : null;
-    const clause = userId ? ' WHERE c.user_id = ?' : '';
-    const params = userId ? [userId] : [];
+    const q = String(req.query.q || '').trim();
+    // 过滤维度：userId 精确匹配 + q（用户 ID / 代号 / 昵称 / 邮箱模糊匹配）
+    let filterIds = null;
+    if (userId) filterIds = [userId];
+    if (q) {
+      const like = `%${q}%`;
+      const matched = all(
+        'SELECT id FROM users WHERE id LIKE ? OR username LIKE ? OR email LIKE ? OR CAST(COALESCE(code, 0) AS TEXT) LIKE ? LIMIT 500',
+        like,
+        like,
+        like,
+        like,
+      ).map((row) => row.id);
+      filterIds = filterIds ? filterIds.filter((id) => matched.includes(id)) : matched;
+    }
+    if (filterIds && !filterIds.length) {
+      // 没有任何匹配用户 → 空列表（不再返回「用户不存在」）
+      return res.json({ items: [], total: 0, page, size, q: q || null, userId });
+    }
+    const clause = filterIds ? ` WHERE c.user_id IN (${filterIds.map(() => '?').join(',')})` : '';
+    const params = filterIds ? [...filterIds] : [];
     const total = get(`SELECT COUNT(*) AS n FROM conversations c${clause}`, ...params).n;
     const rows = all(
-      `SELECT c.*, u.username AS username
+      `SELECT c.*, u.username AS username, u.code AS user_code
          FROM conversations c LEFT JOIN users u ON u.id = c.user_id
          ${clause}
         ORDER BY c.updated_at DESC LIMIT ? OFFSET ?`,
@@ -367,6 +390,8 @@ export default function register() {
       id: row.id,
       userId: row.user_id,
       username: row.username || '',
+      userCode: row.user_code ?? null,
+      nickname: row.username || '',
       characterId: row.character_id,
       characterName: names.get(row.character_id) || '',
       kind: row.kind,
@@ -472,6 +497,13 @@ export default function register() {
         ...getSystemModelsPublic(),
         keyCount: getSystemModelsConfig().providers.filter((p) => p.apiKey).length,
       },
+      mailTemplates: getAdminSetting('mailTemplates', {}) || {},
+      switches: {
+        updateForce: Boolean(update.force),
+        autoUpgrade: Boolean(update.autoUpgrade),
+        allowRegister: Boolean(env.allowRegister),
+        systemModelsEnabled: Boolean(getSystemModelsConfig().enabled),
+      },
       ready: {
         smtp: Boolean(smtp.host && smtp.user),
         onebot: Boolean(onebot.token || onebot.selfId),
@@ -555,6 +587,30 @@ export default function register() {
         changed.push('onebot');
       }
     }
+    if (body.mailTemplates && typeof body.mailTemplates === 'object') {
+      submitted.push('mailTemplates');
+      const current = getAdminSetting('mailTemplates', {}) || {};
+      const next = { ...current };
+      for (const [kind, raw] of Object.entries(body.mailTemplates)) {
+        if (!MAIL_TEMPLATE_KINDS.includes(kind)) {
+          throw badRequest(`邮件模板类型不支持：${kind}（可选 ${MAIL_TEMPLATE_KINDS.join('/')}）`, 'mail_template_kind_invalid');
+        }
+        if (raw === null) {
+          delete next[kind];
+          continue;
+        }
+        if (typeof raw !== 'object') throw badRequest('邮件模板需为对象 {subject, body}', 'mail_template_invalid');
+        const subject = raw.subject === undefined ? (next[kind]?.subject || '') : String(raw.subject || '').trim().slice(0, 200);
+        const bodyText = raw.body === undefined ? (next[kind]?.body || '') : String(raw.body || '').slice(0, 4000);
+        if (!subject && !bodyText) {
+          delete next[kind];
+        } else {
+          next[kind] = { subject, body: bodyText };
+        }
+      }
+      setAdminSetting('mailTemplates', next);
+      changed.push('mailTemplates');
+    }
     if (!submitted.length) throw badRequest('没有可保存的配置项', 'empty_patch');
     // 仅提交掩码（****）视为保持原值，幂等返回当前配置
     if (changed.length) audit(req.userId, 'admin.settings.update', null, { sections: changed }, req.ip);
@@ -572,6 +628,27 @@ export default function register() {
         return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey) };
       })(),
       systemModels: getSystemModelsPublic(),
+      mailTemplates: getAdminSetting('mailTemplates', {}) || {},
+      switches: {
+        updateForce: Boolean((getAdminSetting('update', {}) || {}).force),
+        autoUpgrade: Boolean((getAdminSetting('update', {}) || {}).autoUpgrade),
+        allowRegister: Boolean(env.allowRegister),
+        systemModelsEnabled: Boolean(getSystemModelsConfig().enabled),
+      },
+      merged: {
+        smtp: maskedSmtp(),
+        onebot: maskedOnebot(),
+        update: (() => {
+          const u = getAdminSetting('update', {}) || {};
+          return { force: Boolean(u.force), minVersion: String(u.minVersion || ''), autoUpgrade: Boolean(u.autoUpgrade) };
+        })(),
+        integrations: (() => {
+          const i = getAdminSetting('integrations', {}) || {};
+          return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey) };
+        })(),
+        mailTemplates: getAdminSetting('mailTemplates', {}) || {},
+        systemModels: getSystemModelsPublic(),
+      },
     });
   });
 
@@ -599,6 +676,34 @@ export default function register() {
     }),
   );
 
+  // ---------- 共享广场封禁（仅本服用户） ----------
+  r.get('/plaza/bans', (req, res) => {
+    const items = listBans({ activeOnly: req.query.activeOnly === '1' || req.query.activeOnly === 'true' });
+    res.json({ ok: true, items, total: items.length, scopes: ['all', 'server', 'global'] });
+  });
+
+  // PUT /api/admin/plaza/bans {userId|shareId, scope, reason, until('YYYY-MM-DD HH:mm:ss' UTC+8), permanent}
+  r.put('/plaza/bans', (req, res) => {
+    const body = req.body || {};
+    const ban = createBan(
+      req.userId,
+      {
+        userId: body.userId,
+        shareId: body.shareId,
+        scope: body.scope,
+        reason: body.reason,
+        until: body.until,
+        permanent: body.permanent,
+      },
+      { allowRemote: String(body.scope) === 'global' },
+    );
+    res.status(201).json({ ok: true, ban });
+  });
+
+  r.delete('/plaza/bans/:id', (req, res) => {
+    res.json(deleteBan(req.userId, req.params.id));
+  });
+
   // ---------- 存储 ----------
   r.get('/storage', (_req, res) => {
     res.json(storageUsage());
@@ -608,7 +713,20 @@ export default function register() {
   r.get(
     '/server-status',
     asyncHandler(async (_req, res) => {
-      res.json(await collectServerStatus());
+      const base = await collectServerStatus();
+      const dbInfo = dbStats();
+      res.json({
+        ...base,
+        version: currentVersion(),
+        onlineConnections: (() => {
+          try {
+            return connectionCount();
+          } catch {
+            return 0;
+          }
+        })(),
+        database: { size: dbInfo.fileSize, wal: dbInfo.walSize, total: dbInfo.total, path: env.dbPath },
+      });
     }),
   );
 

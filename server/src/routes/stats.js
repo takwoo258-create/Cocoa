@@ -2,13 +2,17 @@
 import { Router } from 'express';
 import { requireAuth } from '../auth/middleware.js';
 import { badRequest, notFound } from '../core/errors.js';
+import { asInt } from '../core/util.js';
 import { all, get } from '../db/index.js';
 import { queryUsage, windowStart, windowEnd } from '../ai/usage.js';
 import { getCharacter, defaultCharacterId, ensureState } from '../services/characters.js';
 import { decryptJson } from '../core/crypto.js';
 import { parseJson } from '../core/util.js';
 
-const RANGES = new Set(['day', '3d', '7d', '30d', 'year', 'all', 'custom']);
+// v1.5.0：新增 today 别名（= day，按小时分桶），其余历史区间保留
+const RANGES = new Set(['today', 'day', '3d', '7d', '30d', 'year', 'all', 'custom']);
+const PAGE_DEFAULT = 100;
+const PAGE_MAX = 500;
 const BUCKETS = new Set(['day', 'hour', 'month']);
 const STATUS_SCAN_LIMIT = 20000;
 
@@ -22,15 +26,29 @@ function parseIso(value, label) {
 }
 
 export function parseUsageQuery(query = {}) {
-  const range = RANGES.has(String(query.range)) ? String(query.range) : '7d';
-  const bucket = BUCKETS.has(String(query.bucket)) ? String(query.bucket) : range === 'day' ? 'hour' : 'day';
+  const requested = RANGES.has(String(query.range)) ? String(query.range) : '7d';
+  // today 是 day 的别名：对上游按自然日窗口 + 小时分桶
+  const range = requested === 'today' ? 'day' : requested;
+  const bucket = BUCKETS.has(String(query.bucket))
+    ? String(query.bucket)
+    : range === 'day'
+      ? 'hour'
+      : 'day';
   const from = parseIso(query.from, 'from');
   const to = parseIso(query.to, 'to');
   if (range === 'custom') {
     if (!from) throw badRequest('自定义区间需要 from 参数', 'from_required');
     if (to && new Date(to) < new Date(from)) throw badRequest('to 不能早于 from', 'range_invalid');
   }
-  return { range, bucket, from, to, model: query.model ? String(query.model) : null };
+  const page = Math.max(1, asInt(query.page, 1));
+  const pageSize = Math.min(PAGE_MAX, Math.max(1, asInt(query.pageSize ?? query.size, PAGE_DEFAULT)));
+  return { range, requestedRange: requested, bucket, from, to, page, pageSize, model: query.model ? String(query.model) : null };
+}
+
+function paginate(list, page, pageSize) {
+  const total = list.length;
+  const items = list.slice((page - 1) * pageSize, page * pageSize);
+  return { items, total, page, pageSize, pages: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
 /** 用量聚合；userId=null 表示全站（仅管理端使用） */
@@ -44,7 +62,55 @@ export function usageFor({ userId = null, query = {} } = {}) {
     model: q.model,
     bucket: q.bucket,
   });
-  return { ...data, model: q.model };
+  const series = paginate(data.series, q.page, q.pageSize);
+  const models = paginate(data.models, q.page, q.pageSize);
+  return {
+    ...data,
+    range: q.requestedRange,
+    model: q.model,
+    series: series.items,
+    models: models.items,
+    page: q.page,
+    pageSize: q.pageSize,
+    pagination: {
+      series: { total: series.total, pages: series.pages, page: q.page, pageSize: q.pageSize },
+      models: { total: models.total, pages: models.pages, page: q.page, pageSize: q.pageSize },
+    },
+  };
+}
+
+/** 按模型聚合（/api/stats/models）：分页返回 [{model,input,inputHit,inputMiss,output,total,cost,calls}] */
+export function modelsFor({ userId = null, query = {} } = {}) {
+  const q = parseUsageQuery(query);
+  const data = queryUsage({
+    userId: userId || null,
+    range: q.range,
+    from: q.from,
+    to: q.to,
+    model: q.model,
+    bucket: q.bucket,
+  });
+  const items = data.models.map((row) => ({
+    model: row.model,
+    input: row.input,
+    inputHit: row.cached,
+    inputMiss: Math.max(0, row.input - row.cached),
+    output: row.output,
+    total: row.input + row.output,
+    cost: Math.round(Number(row.cost || 0) * 1e6) / 1e6,
+    calls: row.calls,
+  }));
+  const paged = paginate(items, q.page, q.pageSize);
+  return {
+    range: q.requestedRange,
+    from: data.from,
+    to: data.to,
+    items: paged.items,
+    total: paged.total,
+    page: q.page,
+    pageSize: q.pageSize,
+    pages: paged.pages,
+  };
 }
 
 function companionDaysOf(since) {
@@ -147,6 +213,33 @@ export function overviewFor(userId, { characterId = null } = {}) {
     }
   }
 
+  // v1.5.0：统计页分「模型消耗」「陪伴天数」两组展示（旧顶层字段保留兼容）
+  const usageTotalsRow = get(
+    `SELECT COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(cached_tokens),0) AS cached,
+             COALESCE(SUM(output_tokens),0) AS output, COALESCE(SUM(cost),0) AS cost, COUNT(*) AS calls
+        FROM usage_records WHERE user_id = ?${charFilter}`,
+    ...params,
+  );
+  const consumption = {
+    input: usageTotalsRow.input,
+    inputHit: usageTotalsRow.cached,
+    inputMiss: Math.max(0, usageTotalsRow.input - usageTotalsRow.cached),
+    output: usageTotalsRow.output,
+    total: usageTotalsRow.input + usageTotalsRow.output,
+    cost: Math.round(Number(usageTotalsRow.cost || 0) * 1e6) / 1e6,
+    calls: usageTotalsRow.calls,
+    byModel: callsByModel,
+  };
+  const companion = {
+    days: companionDays,
+    intimacy,
+    characters,
+    chatCount,
+    bookCount,
+    healthAbnormal,
+    moodAbnormal,
+  };
+
   return {
     scope,
     characterId: cid,
@@ -160,6 +253,8 @@ export function overviewFor(userId, { characterId = null } = {}) {
     statusScanned: statusRows.length,
     companionDays,
     intimacy,
+    consumption,
+    companion,
   };
 }
 
@@ -180,6 +275,10 @@ export default function register() {
         to: req.query.to || null,
       }),
     );
+  });
+
+  r.get('/models', (req, res) => {
+    res.json(modelsFor({ userId: req.userId, query: req.query }));
   });
 
   r.get('/overview', (req, res) => {

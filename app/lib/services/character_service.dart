@@ -89,7 +89,7 @@ class CharacterService {
   }
 
   Future<List<CharacterTemplate>> templates() async {
-    final dynamic r = await api.get('/characters/templates');
+    final dynamic r = await api.get('/templates');
     final List<dynamic> raw = r is List ? r : asList(asMap(r)['items']);
     return asMapList(raw)
         .map((Map<String, dynamic> j) => CharacterTemplate.fromJson(j))

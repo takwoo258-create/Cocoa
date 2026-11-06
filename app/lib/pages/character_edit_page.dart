@@ -199,6 +199,40 @@ class _CharacterEditPageState extends State<CharacterEditPage> {
         final Character created =
             await state.characterService.create(profile: _profile());
         await state.setActiveCharacter(created.id);
+        final TextEditingController addressCtrl = TextEditingController();
+        final String? address = await showDialog<String>(
+          context: context,
+          barrierDismissible: true,
+          builder: (BuildContext ctx) => AlertDialog(
+            title: const Text('角色该怎么称呼你？'),
+            content: TextField(
+              controller: addressCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: '例如 主人 / 小名',
+                helperText: '跳过时服务端将按「主人」处理',
+              ),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop<String>(''),
+                child: const Text('跳过'),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.of(ctx).pop<String>(addressCtrl.text.trim()),
+                child: const Text('保存称呼'),
+              ),
+            ],
+          ),
+        );
+        addressCtrl.dispose();
+        try {
+          await state.characterService.saveSettings(
+            created.id,
+            <String, dynamic>{'userAddress': address ?? ''},
+          );
+        } catch (_) {}
       }
       if (!mounted) return;
       showToast(_isEdit ? '人设已更新' : '角色创建成功');

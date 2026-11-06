@@ -770,14 +770,13 @@ class _AdminPageState extends State<AdminPage>
               style: const TextStyle(fontSize: 11, color: AppColors.inkSoft),
             ),
           ),
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: ratio.toDouble(),
-                minHeight: 5,
-                backgroundColor: AppColors.sand,
-              ),
+          SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              value: ratio.toDouble().clamp(0.0, 1.0),
+              strokeWidth: 4,
+              backgroundColor: AppColors.sand,
             ),
           ),
           const SizedBox(width: 8),
@@ -1501,10 +1500,14 @@ class _AdminPageState extends State<AdminPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                LinearProgressIndicator(
-                  value: cpuPct / 100,
-                  minHeight: 7,
-                  backgroundColor: AppColors.sand,
+                SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: CircularProgressIndicator(
+                    value: cpuPct / 100,
+                    strokeWidth: 6,
+                    backgroundColor: AppColors.sand,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -1526,10 +1529,14 @@ class _AdminPageState extends State<AdminPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                LinearProgressIndicator(
-                  value: memPct / 100,
-                  minHeight: 7,
-                  backgroundColor: AppColors.sand,
+                SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: CircularProgressIndicator(
+                    value: memPct / 100,
+                    strokeWidth: 6,
+                    backgroundColor: AppColors.sand,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -1553,10 +1560,14 @@ class _AdminPageState extends State<AdminPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                LinearProgressIndicator(
-                  value: diskPct / 100,
-                  minHeight: 7,
-                  backgroundColor: AppColors.sand,
+                SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: CircularProgressIndicator(
+                    value: diskPct / 100,
+                    strokeWidth: 6,
+                    backgroundColor: AppColors.sand,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(

@@ -35,7 +35,7 @@ function resolveCharacter(req) {
   return character;
 }
 
-function shapeBook(userId, row, { withContent = true } = {}) {
+function shapeBook(userId, row, { withContent = true, unlocked = false } = {}) {
   const meta = decryptJson(userId, row.meta, {}) || {};
   const out = {
     id: row.id,
@@ -43,15 +43,36 @@ function shapeBook(userId, row, { withContent = true } = {}) {
     type: row.type,
     title: safeDec(userId, row.title),
     day: row.day,
+    seriesId: row.series_id || null,
+    sessionId: row.session_id || null,
+    words: Number(meta.words || 0),
+    chapter: Number(meta.chapter || 0) || null,
+    short: Boolean(meta.short),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     meta,
-    locked: row.type === 'diary',
+    locked: row.type === 'diary' && !unlocked,
   };
   if (withContent) out.content = safeDec(userId, row.content);
-  else if (row.type !== 'diary') out.excerpt = truncate(safeDec(userId, row.content).replace(/\s+/g, ' '), 120);
+  else if (row.type !== 'diary') out.excerpt = truncate(safeDec(userId, row.content).replace(/\s+/g, ' '), 140);
   else out.excerpt = null;
   return out;
+}
+
+/** 列表里的连载分组：小说/散文按 series_id 聚合章节数 */
+function seriesSummary(items) {
+  const map = new Map();
+  for (const it of items) {
+    if (!it.seriesId || it.type === 'diary' || it.type === 'news') continue;
+    const cur = map.get(it.seriesId) || { seriesId: it.seriesId, type: it.type, count: 0, latestAt: '', title: it.title };
+    cur.count += 1;
+    if (!cur.latestAt || it.createdAt > cur.latestAt) {
+      cur.latestAt = it.createdAt;
+      cur.title = it.title;
+    }
+    map.set(it.seriesId, cur);
+  }
+  return [...map.values()].sort((a, b) => b.latestAt.localeCompare(a.latestAt));
 }
 
 function currentHint(userId, characterId, day) {
@@ -84,11 +105,16 @@ export default function register() {
       const type = String(req.query.type || '').trim();
       if (type && !BOOK_TYPES.includes(type)) throw badRequest('type 只能是 novel/diary/essay/news', 'type_invalid');
       const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
+      const seriesId = String(req.query.seriesId || '').trim();
       const where = ['user_id = ?', 'character_id = ?'];
       const params = [req.userId, character.id];
       if (type) {
         where.push('type = ?');
         params.push(type);
+      }
+      if (seriesId) {
+        where.push('series_id = ?');
+        params.push(seriesId);
       }
       const rows = all(
         `SELECT * FROM books WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
@@ -98,7 +124,7 @@ export default function register() {
       const items = rows.map((row) => shapeBook(req.userId, row, { withContent: false }));
       const counts = {};
       for (const it of items) counts[it.type] = (counts[it.type] || 0) + 1;
-      res.json({ characterId: character.id, items, counts, total: items.length });
+      res.json({ characterId: character.id, items, counts, series: seriesSummary(items), total: items.length });
     }),
   );
 
@@ -158,7 +184,7 @@ export default function register() {
         characterId: character.id,
         day: lockRow.day,
         hint: currentHint(req.userId, character.id, lockRow.day),
-        diary: shapeBook(req.userId, diary),
+        diary: shapeBook(req.userId, diary, { unlocked: true }),
       });
     }),
   );
@@ -176,14 +202,15 @@ export default function register() {
       const rawContent = String(req.body?.content || '').trim();
       const tags = Array.isArray(req.body?.tags) ? req.body.tags.map((t) => String(t)).slice(0, 8) : [];
 
+      const seriesId = String(req.body?.seriesId || '').trim() || null;
       if (!rawContent) {
         const jobId = enqueue(
           'creation',
           new Date(),
-          { characterId: character.id, type, force: true, tags },
+          { characterId: character.id, type, force: true, tags, seriesId },
           { userId: req.userId, characterId: character.id },
         );
-        return res.status(202).json({ queued: true, jobId, type, characterId: character.id });
+        return res.status(202).json({ queued: true, jobId, type, characterId: character.id, seriesId });
       }
 
       const safe = sanitizeCreation(rawContent);
@@ -191,9 +218,12 @@ export default function register() {
       const day = dayKey();
       const id = `bk_${uuid().replace(/-/g, '').slice(0, 16)}`;
       const now = nowIso();
+      const chapter = seriesId
+        ? Number(get('SELECT COUNT(*) n FROM books WHERE user_id = ? AND character_id = ? AND series_id = ?', req.userId, character.id, seriesId)?.n || 0) + 1
+        : null;
       run(
-        `INSERT INTO books(id, user_id, character_id, type, title, content, day, meta, created_at, updated_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO books(id, user_id, character_id, type, title, content, day, meta, series_id, session_id, created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?,NULL,?,?)`,
         id,
         req.userId,
         character.id,
@@ -201,7 +231,8 @@ export default function register() {
         encryptText(req.userId, title.slice(0, 60)),
         encryptText(req.userId, safe.text),
         day,
-        encryptJson(req.userId, { manual: true, tags, words: safe.text.length, filtered: safe.filtered }),
+        encryptJson(req.userId, { manual: true, tags, words: safe.text.length, filtered: safe.filtered, chapter }),
+        seriesId,
         now,
         now,
       );
@@ -227,10 +258,13 @@ export default function register() {
           });
         }
         if (!/^\d{6}$/.test(password)) throw badRequest('请输入 6 位数字密码', 'diary_password_format');
+        const attempt = rateLimit({ key: `diary-detail:${req.userId}:${row.character_id}`, limit: 8, windowMs: 60_000 });
+        if (!attempt.ok) throw tooMany('尝试次数过多，请一分钟后再试', 'diary_locked_temp');
+        if (!findDiaryLockRow(row.character_id, day)) ensureDiaryLock(row.character_id, req.userId);
         const verdict = verifyDiaryPassword(row.character_id, day, password);
         if (!verdict.ok) throw badRequest('密码不对哦，再想想看？', 'diary_password_invalid');
       }
-      res.json({ book: shapeBook(req.userId, row) });
+      res.json({ book: shapeBook(req.userId, row, { unlocked: row.type === 'diary' }) });
     }),
   );
 

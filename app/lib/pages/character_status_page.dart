@@ -33,6 +33,7 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
   bool _loading = true;
   bool _waking = false;
   bool _refreshing = false;
+  bool _enabled = true;
   Timer? _cooldownTimer;
   int _cooldownSec = 0;
 
@@ -40,6 +41,7 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
   void initState() {
     super.initState();
     _state = widget.initialState ?? widget.character.state;
+    _enabled = widget.character.settings.enabled;
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
@@ -48,9 +50,16 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
     try {
       final CharacterState latest =
           await state.characterService.getState(widget.character.id);
+      bool enabled = _enabled;
+      try {
+        final CharacterSettings settings =
+            await state.characterService.getSettings(widget.character.id);
+        enabled = settings.enabled;
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _state = latest;
+        _enabled = enabled;
         _loading = false;
       });
     } on ApiException catch (e) {
@@ -72,6 +81,7 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
       setState(() {
         if (result.state != null) _state = result.state!;
       });
+      showToast('${widget.character.name}被叫醒了');
       if (result.reply.trim().isNotEmpty) {
         await showDialog<void>(
           context: context,
@@ -279,13 +289,27 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
                 ],
               ),
             ),
+            if (!_enabled)
+              Container(
+                margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.warn.withAlpha(22),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.warn.withAlpha(80)),
+                ),
+                child: const Text(
+                  '角色已暂停：状态刷新与叫醒已禁用。',
+                  style: TextStyle(fontSize: 11, color: AppColors.warn),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
               child: Row(
                 children: <Widget>[
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: (_refreshing || _cooldownSec > 0)
+                      onPressed: (!_enabled || _refreshing || _cooldownSec > 0)
                           ? null
                           : _refreshStatus,
                       icon: _refreshing
@@ -300,10 +324,11 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _waking ? null : _wake,
+                  if (_state.resting) ...<Widget>[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: (!_enabled || _waking) ? null : _wake,
                       style: FilledButton.styleFrom(
                         backgroundColor:
                             _state.resting ? AppColors.warn : AppColors.cocoa,
@@ -322,6 +347,7 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
                       label: const Text('强行叫醒'),
                     ),
                   ),
+                  ],
                 ],
               ),
             ),

@@ -616,12 +616,13 @@ describe('调度器兼容与巡检', () => {
 
     const positional = await recallForChat(userA.id, charA.id, '火锅', { limit: 2 });
     assert.ok(positional.includes('火锅'));
-    assert.ok(positional.split('\n').length <= 2);
+    // 记忆行 ≤ limit，另加 1 行当日日记密码上下文
+    assert.ok(positional.split('\n').length <= 3);
 
     // 有记忆但无命中：按权重补足 topN，保证角色始终「记得」用户（无记忆才返回 ''）
     const fallback = await recallForChat(userA.id, charA.id, '绝无此词');
     assert.ok(fallback.includes('喜好/'), '无命中应退回按权重补足');
-    assert.ok(fallback.split('\n').length <= 8);
+    assert.ok(fallback.split('\n').length <= 9);
     assert.equal(await recallForChat({ userId: userC.id, characterId: charC.id, query: '随便' }), '');
     assert.equal(await recallForChat(null, null, null), '');
   });

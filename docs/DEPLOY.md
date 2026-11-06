@@ -2,7 +2,7 @@
 
 本手册覆盖后端从零部署、升级、回滚、备份、排障的完整流程。所有命令以 `root` 在目标服务器执行（或本机通过 `deploy/deploy.mjs` 经 SSH 代为执行）。
 
-- 目标服务器（当前线上）：`120.26.204.70`，SSH 22
+- 目标服务器（当前线上）：`<SERVER_IP>`，SSH 22
 - 服务名：`cocoa.service`　端口：`8787`（占用则 `8788`）
 - 代码目录：`/opt/cocoa`　数据目录：`/opt/cocoa/data`　上一版：`/opt/cocoa.prev`
 
@@ -67,7 +67,7 @@
 在**本机**（仓库根目录）执行，SSH 密码只通过环境变量传递，不落仓库：
 
 ```bash
-export COCOA_SSH_HOST=120.26.204.70
+export COCOA_SSH_HOST=<SERVER_IP>
 export COCOA_SSH_PORT=22
 export COCOA_SSH_USER=root
 export COCOA_SSH_PASS='<root 密码>'          # 或 COCOA_SSH_KEY=/path/id_rsa
@@ -100,10 +100,10 @@ node deploy/deploy.mjs rollback    # ④ 出问题时回滚
 tar -czf /tmp/cocoa.tar.gz -C . \
   --exclude=node_modules --exclude=data --exclude=.git --exclude=.env \
   --exclude=app/build --exclude=app/.dart_tool --exclude='*.jks' --exclude='*.apk' .
-scp /tmp/cocoa.tar.gz deploy/install.sh root@120.26.204.70:/tmp/
+scp /tmp/cocoa.tar.gz deploy/install.sh root@<SERVER_IP>:/tmp/
 
 # ② 服务器执行安装
-ssh root@120.26.204.70
+ssh root@<SERVER_IP>
 bash /tmp/install.sh /tmp/cocoa.tar.gz /opt/cocoa 8787
 ```
 
@@ -183,7 +183,7 @@ systemctl show cocoa -p MemoryCurrent,MemoryMax
 # 服务器内（排除进程问题）
 curl -fsS http://127.0.0.1:8787/api/health
 # 本机（排除安全组问题）
-curl -m 8 http://120.26.204.70:8787/api/health
+curl -m 8 http://<SERVER_IP>:8787/api/health
 ```
 
 内通外不通 → 安全组；内外都不通 → 服务或防火墙。
@@ -206,17 +206,17 @@ systemctl restart cocoa
 
 | 项 | 值 |
 | --- | --- |
-| 域名 | `120-26-204-70.sslip.io`（sslip.io 泛解析 → 120.26.204.70，无需自备 DNS） |
-| 入口 | `https://120-26-204-70.sslip.io` → Caddy → `127.0.0.1:8787` |
-| 证书 | Let's Encrypt（R11 中间证书），`CN=120-26-204-70.sslip.io`，90 天有效，自动续签 |
+| 域名 | `<DOMAIN>`（sslip.io 泛解析 → <SERVER_IP>，无需自备 DNS） |
+| 入口 | `https://<DOMAIN>` → Caddy → `127.0.0.1:8787` |
+| 证书 | Let's Encrypt（R11 中间证书），`CN=<DOMAIN>`，90 天有效，自动续签 |
 | HTTP | 80 端口自动 308 跳转到 HTTPS（`deploy/Caddyfile` 里的 `:80` 兜底块） |
-| 直连 | `http://120.26.204.70:8787` 仍然保留，供旧客户端与 WS 使用 |
+| 直连 | `http://<SERVER_IP>:8787` 仍然保留，供旧客户端与 WS 使用 |
 | 组件 | `/usr/local/bin/caddy`（v2.11.7 静态二进制）+ `caddy.service`，配置 `/etc/caddy/Caddyfile` |
 
 安装/重装（服务器内）：
 
 ```bash
-bash deploy/caddy-setup.sh 120-26-204-70.sslip.io
+bash deploy/caddy-setup.sh <DOMAIN>
 # 无外网时先本机下载再上传：CADDY_TARBALL=/tmp/caddy.tar.gz bash deploy/caddy-setup.sh <域名>
 ```
 
@@ -227,13 +227,13 @@ bash deploy/caddy-setup.sh 120-26-204-70.sslip.io
 - 查看证书与到期时间：
 
 ```bash
-echo | openssl s_client -connect 120-26-204-70.sslip.io:443 -servername 120-26-204-70.sslip.io 2>/dev/null \
+echo | openssl s_client -connect <DOMAIN>:443 -servername <DOMAIN> 2>/dev/null \
   | openssl x509 -noout -subject -issuer -dates
 ```
 
 - Caddy 启动日志：`journalctl -u caddy -n 100 --no-pager`；证书目录 `/var/lib/caddy/.local/share/caddy/certificates`；
 - **前置条件**：云安全组必须放行 80/TCP 与 443/TCP（Let's Encrypt 的 HTTP-01 校验依赖 80），否则证书申请会失败；
-- NapCat 反向 WS 若走公网，建议改成 `wss://120-26-204-70.sslip.io/onebot/ws?access_token=…`。
+- NapCat 反向 WS 若走公网，建议改成 `wss://<DOMAIN>/onebot/ws?access_token=…`。
 
 ### Nginx 备选方案
 
@@ -257,7 +257,7 @@ NapCat **不在本仓库**，也**不在当前服务器**（实测无进程/无�
 
 1. 部署 NapCat（Docker 示例：`mlikiowa/napcat-docker`），用独立 QQ 小号；
 2. NapCat WebUI → 网络配置 → 新建「WebSocket 客户端（反向 WS）」；
-3. URL：`ws://120.26.204.70:8787/onebot/ws?access_token=<ONEBOT_TOKEN>`；
+3. URL：`ws://<SERVER_IP>:8787/onebot/ws?access_token=<ONEBOT_TOKEN>`；
 4. `/opt/cocoa/.env` 里 `ONEBOT_TOKEN` 保持一致（也可在管理端「OneBot 配置」修改，优先级更高）；
 5. `systemctl restart cocoa` 后重启 NapCat 触发重连；
 6. 验证：`curl http://127.0.0.1:8787/api/admin/onebot/status`（需管理员令牌）。
@@ -361,7 +361,7 @@ bash scripts/package-backend.sh /data/dsh/home
 
 ```bash
 # 存活（公网 HTTPS）
-curl -fsS https://120-26-204-70.sslip.io/api/health
+curl -fsS https://<DOMAIN>/api/health
 # 直连
 curl -fsS http://127.0.0.1:8787/api/health
 

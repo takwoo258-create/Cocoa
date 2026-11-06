@@ -16,6 +16,7 @@ import '../widgets/update_dialog.dart';
 import 'admin/admin_page.dart';
 import 'bookshelf_page.dart';
 import 'character_list_page.dart';
+import 'settings/plaza_page.dart';
 import 'settings_page.dart';
 import 'stats_page.dart';
 
@@ -101,6 +102,23 @@ class _HomePageState extends State<HomePage>
           break;
         case 'qq_binding':
           showToast('QQ 接入角色已更新');
+          break;
+        case 'plaza_used':
+        case 'plaza_quota':
+        case 'plaza_expiring':
+        case 'plaza_expired':
+        case 'plaza_banned':
+          state.handlePlazaEvent(
+            event.type,
+            event.data,
+            onOpenPlaza: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const PlazaPage(),
+                ),
+              );
+            },
+          );
           break;
         default:
           break;

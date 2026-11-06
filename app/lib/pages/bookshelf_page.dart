@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../core/api_client.dart';
 import '../core/constants.dart';
@@ -13,6 +12,7 @@ import '../models/book.dart';
 import '../models/character.dart';
 import '../widgets/common.dart';
 import '../widgets/qzone_share_sheet.dart';
+import 'diary_lock_page.dart';
 import 'reader_page.dart';
 
 class BookshelfPage extends StatefulWidget {
@@ -35,6 +35,8 @@ class _BookshelfPageState extends State<BookshelfPage>
   bool _loadingBooks = false;
   DiaryLockStatus? _lock;
   String? _diaryPassword;
+  final Map<String, List<BookSeries>> _series = <String, List<BookSeries>>{};
+  final Map<String, String?> _seriesFilter = <String, String?>{};
 
   @override
   void initState() {
@@ -106,11 +108,14 @@ class _BookshelfPageState extends State<BookshelfPage>
     final AppState state = AppScope.read(context);
     setState(() => _loadingBooks = true);
     try {
-      final List<Book> list =
-          await state.bookService.list(characterId: c.id, type: type);
+      final BookListResult page = await state.bookService.listPage(
+        characterId: c.id,
+        type: type,
+      );
       if (!mounted) return;
       setState(() {
-        _books[type] = list;
+        _books[type] = page.books;
+        _series[type] = page.series;
         _loaded.add(type);
       });
     } on ApiException catch (e) {
@@ -141,91 +146,28 @@ class _BookshelfPageState extends State<BookshelfPage>
   Future<void> _unlockDiary() async {
     final Character? c = _character;
     if (c == null) return;
-    final AppState state = AppScope.read(context);
-    final TextEditingController ctrl = TextEditingController();
-    final String? password = await showDialog<String>(
-      context: context,
-      builder: (BuildContext ctx) => AlertDialog(
-          title: const Text('解锁日记本'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const Text(
-                '日记是角色的隐私，需要 6 位数字密码。角色只会在聊天里暗示线索，不会直接说出密码。',
-                style: TextStyle(fontSize: 11.5, color: AppColors.inkSoft, height: 1.5),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: ctrl,
-                autofocus: true,
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                inputFormatters: <TextInputFormatter>[
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(6),
-                ],
-                decoration: const InputDecoration(
-                  hintText: '6 位数字密码',
-                  counterText: '',
-                ),
-                style: const TextStyle(fontSize: 18, letterSpacing: 8),
-              ),
-              if (_lock != null && _lock!.hint.isNotEmpty) ...<Widget>[
-                const SizedBox(height: 8),
-                Text(
-                  '今日线索：${_lock!.hint}',
-                  style: const TextStyle(fontSize: 11.5, color: AppColors.rose),
-                ),
-              ],
-            ],
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('取消'),
-            ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
-            child: const Text('解锁'),
-          ),
-        ],
+    final String? password = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => DiaryLockPage(
+          characterId: c.id,
+          hint: _lock?.hint ?? '',
+        ),
       ),
     );
-    ctrl.dispose();
-    if (password == null) return;
-    if (password.length != 6) {
-      showToast('请输入 6 位数字密码');
-      return;
-    }
-    try {
-      final DiaryUnlockResult r = await state.bookService.unlockDiary(
-        characterId: c.id,
-        password: password,
+    if (!mounted || password == null) return;
+    setState(() {
+      _diaryPassword = password;
+      _lock = DiaryLockStatus(
+        locked: false,
+        hint: _lock?.hint ?? '',
+        day: _lock?.day ?? '',
+        hasDiary: _lock?.hasDiary ?? false,
+        diaryId: _lock?.diaryId,
       );
-      if (!r.ok) {
-        showToast('密码不正确，再想想角色给的线索', isError: true);
-        return;
-      }
-      setState(() {
-        _diaryPassword = password;
-        _lock = DiaryLockStatus(
-          locked: false,
-          hint: _lock?.hint ?? '',
-          day: _lock?.day ?? '',
-          hasDiary: _lock?.hasDiary ?? false,
-          diaryId: _lock?.diaryId,
-        );
-        _loaded.remove('diary');
-      });
-      showToast('日记本已解锁');
-      await _ensureLoaded('diary', force: true);
-      if (r.diary != null && mounted) {
-        await _openBook(r.diary!);
-      }
-    } catch (e) {
-      showToast('解锁失败：$e', isError: true);
-    }
+      _loaded.remove('diary');
+    });
+    showToast('日记本已解锁');
+    await _ensureLoaded('diary', force: true);
   }
 
   Future<void> _openBook(Book book) async {
@@ -314,13 +256,18 @@ class _BookshelfPageState extends State<BookshelfPage>
         icon: type == 'news' ? Icons.public : Icons.auto_stories_outlined,
       );
     }
-    return RefreshIndicator(
+    final String? selected = _seriesFilter[type];
+    final List<Book> shown = selected == null
+        ? items
+        : items.where((Book b) => b.seriesId == selected).toList();
+    final List<BookSeries> groups = _series[type] ?? const <BookSeries>[];
+    final Widget list = RefreshIndicator(
       onRefresh: () => _ensureLoaded(type, force: true),
       child: ListView.builder(
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 20),
-        itemCount: items.length,
+        itemCount: shown.length,
         itemBuilder: (BuildContext context, int i) {
-          final Book b = items[i];
+          final Book b = shown[i];
           return GestureDetector(
             onTap: () => _openBook(b),
             child: Container(
@@ -375,6 +322,41 @@ class _BookshelfPageState extends State<BookshelfPage>
                     ],
                   ),
                   const SizedBox(height: 5),
+                  Row(
+                    children: <Widget>[
+                      if (b.words > 0)
+                        Text(
+                          '${b.words} 字',
+                          style: const TextStyle(
+                            fontSize: 9.5,
+                            color: AppColors.inkSoft,
+                          ),
+                        ),
+                      if (b.chapter > 0) ...<Widget>[
+                        const SizedBox(width: 8),
+                        Text(
+                          '第 ${b.chapter} 章',
+                          style: const TextStyle(
+                            fontSize: 9.5,
+                            color: AppColors.inkSoft,
+                          ),
+                        ),
+                      ],
+                      if (b.seriesId.isNotEmpty) ...<Widget>[
+                        const SizedBox(width: 8),
+                        const Text(
+                          '连载',
+                          style: TextStyle(fontSize: 9.5, color: AppColors.rose),
+                        ),
+                      ] else if (b.type == 'essay') ...<Widget>[
+                        const SizedBox(width: 8),
+                        const Text(
+                          '独立成篇',
+                          style: TextStyle(fontSize: 9.5, color: AppColors.cocoa),
+                        ),
+                      ],
+                    ],
+                  ),
                   Text(
                     b.previewText,
                     maxLines: 2,
@@ -391,6 +373,41 @@ class _BookshelfPageState extends State<BookshelfPage>
           );
         },
       ),
+    );
+    if (groups.isEmpty) return list;
+    return Column(
+      children: <Widget>[
+        SizedBox(
+          height: 36,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            children: <Widget>[
+              ChoiceChip(
+                label: const Text('全部', style: TextStyle(fontSize: 10.5)),
+                selected: selected == null,
+                onSelected: (_) => setState(() => _seriesFilter[type] = null),
+              ),
+              const SizedBox(width: 6),
+              ...groups.map(
+                (BookSeries g) => Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ChoiceChip(
+                    label: Text(
+                      '${g.title.isEmpty ? g.id : g.title} (${g.count})',
+                      style: const TextStyle(fontSize: 10.5),
+                    ),
+                    selected: selected == g.id,
+                    onSelected: (_) =>
+                        setState(() => _seriesFilter[type] = g.id),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(child: list),
+      ],
     );
   }
 

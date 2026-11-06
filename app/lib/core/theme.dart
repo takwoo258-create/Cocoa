@@ -33,7 +33,7 @@ const LinearGradient kRoseGradient = LinearGradient(
   colors: <Color>[Color(0xFFE8B49C), Color(0xFFD98E73)],
 );
 
-ThemeData buildAppTheme() {
+ThemeData buildAppTheme({String? fontFamily, String motion = 'normal'}) {
   const ColorScheme scheme = ColorScheme.light(
     primary: AppColors.cocoa,
     onPrimary: AppColors.white,
@@ -56,6 +56,7 @@ ThemeData buildAppTheme() {
 
   return ThemeData(
     useMaterial3: true,
+    fontFamily: fontFamily,
     colorScheme: scheme,
     scaffoldBackgroundColor: AppColors.cream,
     dividerColor: AppColors.sand,
@@ -77,11 +78,17 @@ ThemeData buildAppTheme() {
       contentTextStyle: TextStyle(color: AppColors.white),
       behavior: SnackBarBehavior.floating,
     ),
-    pageTransitionsTheme: const PageTransitionsTheme(
+    pageTransitionsTheme: PageTransitionsTheme(
       builders: <TargetPlatform, PageTransitionsBuilder>{
-        TargetPlatform.android: CocoaPageTransitionsBuilder(),
-        TargetPlatform.iOS: CocoaPageTransitionsBuilder(),
-        TargetPlatform.macOS: CocoaPageTransitionsBuilder(),
+        TargetPlatform.android: motion == 'off'
+            ? const _NoTransitionsBuilder()
+            : CocoaPageTransitionsBuilder(),
+        TargetPlatform.iOS: motion == 'off'
+            ? const _NoTransitionsBuilder()
+            : CocoaPageTransitionsBuilder(),
+        TargetPlatform.macOS: motion == 'off'
+            ? const _NoTransitionsBuilder()
+            : CocoaPageTransitionsBuilder(),
       },
     ),
     inputDecorationTheme: InputDecorationTheme(
@@ -189,4 +196,19 @@ class CocoaPageTransitionsBuilder extends PageTransitionsBuilder {
       ),
     );
   }
+}
+
+
+class _NoTransitionsBuilder extends PageTransitionsBuilder {
+  const _NoTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) =>
+      child;
 }

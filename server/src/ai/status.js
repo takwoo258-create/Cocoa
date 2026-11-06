@@ -11,6 +11,7 @@ import { enqueue, cancelJobs, nextJob } from '../services/jobs.js';
 import { recordUsage } from './usage.js';
 import { parseReply, extractJson } from './reply.js';
 import { ensureBackgroundConversation, limitState } from './context.js';
+import { isCharacterActiveById } from './activity.js';
 import * as defaultProvider from './provider.js';
 import { getWeatherSafe, weatherPrompt } from '../services/integrations.js';
 import logger from '../core/logger.js';
@@ -18,6 +19,43 @@ import logger from '../core/logger.js';
 export const SLEEP_SUFFIX = '若强行叫醒的话，可能会带来不必要的麻烦哦';
 export const STATUS_HARD_RETRY_MS = 60 * 60_000;
 export const MANUAL_REFRESH_COOLDOWN_MS = 5 * 60_000;
+// v1.5.0：自动状态刷新间隔 5 分钟 ~ 30 天；null/0 表示不自动刷新
+export const STATUS_INTERVAL_MIN_SEC = 300;
+export const STATUS_INTERVAL_MAX_SEC = 86_400 * 30;
+export const DEFAULT_STATUS_INTERVAL_SEC = 600;
+const refreshing = new Set(); // 防止并发刷新导致状态重复
+
+// v1.5.0：天气 30 分钟缓存 + 单飞（同一城市并发只请求一次），避免每条消息都打接口
+export const WEATHER_TTL_MS = 30 * 60_000;
+const weatherCache = new Map(); // city -> { at, prompt }
+const weatherInflight = new Map(); // city -> Promise<string>
+
+export function clearWeatherCache() {
+  weatherCache.clear();
+  weatherInflight.clear();
+}
+
+export async function cachedWeatherPrompt(settings = {}, { fetchIfMissing = true, fetcher = weatherPrompt, ttlMs = WEATHER_TTL_MS } = {}) {
+  if (process.env.COCOA_DISABLE_WEATHER === '1') return '';
+  const city = String(settings?.weatherCity || '宣城').trim().slice(0, 32) || '宣城';
+  const hit = weatherCache.get(city);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.prompt;
+  if (!fetchIfMissing) return hit?.prompt || '';
+  if (weatherInflight.has(city)) return weatherInflight.get(city);
+  const task = (async () => {
+    try {
+      const prompt = String((await fetcher(city)) || '');
+      weatherCache.set(city, { at: Date.now(), prompt });
+      return prompt;
+    } catch {
+      return hit?.prompt || '';
+    } finally {
+      weatherInflight.delete(city);
+    }
+  })();
+  weatherInflight.set(city, task);
+  return task;
+}
 
 /** 模型作息值归一化：awake | napping | sleeping（兼容旧的 nap/sleep/awake_override） */
 export function normalizeSleepState(value) {
@@ -147,9 +185,11 @@ export function buildStatusPrompt(character, state, { softLimited = false, world
     world ? `外部环境：${world}` : '',
     '请结合种族、性别与设定推断生理状态、健康程度与是否患病，并给出一小段动作、心理活动、心情、健康状态。',
     `当前作息：${normalizeSleepState(state?.sleep_state) || 'awake'}（awake 清醒 / napping 午睡或小睡 / sleeping 夜间睡眠）。请结合当前时间、人设与健康状况重新判断此刻是否清醒、在午睡还是在睡觉。`,
+    `今天的作息安排：${state?.sleep_schedule || '尚未确定'}。请按真实生活习惯给出动态窗口（允许熬夜、晚起、早睡），每天首次刷新时确定。`,
     '健康与心情正常时 healthAbnormal/moodAbnormal 为 false；出现疾病、受伤、明显不适或强烈负面情绪时为 true。',
     '只输出一个 JSON 对象，不要代码块或多余文字：',
-    '{"type":"status","motion":"","psychology":"","mood":"","health":"","sleepState":"awake","healthAbnormal":false,"moodAbnormal":false}',
+    '{"type":"status","motion":"","psychology":"","mood":"","health":"","sleepState":"awake","sleepSchedule":{"sleepAt":"23:30","wakeAt":"07:00","napStart":null,"napEnd":null},"healthAbnormal":false,"moodAbnormal":false}',
+    'sleepSchedule 用 24 小时制 HH:MM（UTC+8）；sleepAt 为今天入睡时间、wakeAt 为起床时间，可留空表示不睡/不设午睡。',
     softLimited ? '（当前为软限额状态：只做最必要的状态描述，简洁。）' : '',
   ]
     .filter(Boolean)
@@ -176,20 +216,129 @@ function persistStatusMessage({ userId, characterId, content, meta }) {
   return id;
 }
 
-export function statusIntervalMs(settings = {}, softLimited = false) {
-  if (softLimited) return 4 * 3600_000;
-  const min = Number(settings?.statusIntervalMin) || 10;
-  return Math.max(60_000, Math.round(min * 60_000));
+/** settings.statusIntervalSec → 秒；null/0 = 永久不自动刷新；缺省时兼容旧 statusIntervalMin（默认 10 分钟） */
+export function statusIntervalSecFor(settings = {}) {
+  const raw = settings?.statusIntervalSec;
+  if (raw === null || raw === 0 || raw === '0' || raw === '') return null;
+  if (raw === undefined) {
+    const legacy = Number(settings?.statusIntervalMin);
+    if (Number.isFinite(legacy) && legacy > 0) {
+      return Math.min(STATUS_INTERVAL_MAX_SEC, Math.max(STATUS_INTERVAL_MIN_SEC, Math.round(legacy * 60)));
+    }
+    return DEFAULT_STATUS_INTERVAL_SEC;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(STATUS_INTERVAL_MAX_SEC, Math.max(STATUS_INTERVAL_MIN_SEC, Math.round(n)));
 }
 
-/** 安排下一次状态刷新（同一角色只保留一个 pending） */
-export function scheduleStatusRefresh({ userId, characterId, delayMs = null, softLimited = null, settings = null } = {}) {
+/** @returns {number|null} 毫秒；null 表示不自动刷新 */
+export function statusIntervalMs(settings = {}, _softLimited = false) {
+  const sec = statusIntervalSecFor(settings);
+  return sec == null ? null : sec * 1000;
+}
+
+// ---------------- 当日作息（sleep_schedule / sleep_since / next_sleep_change） ----------------
+
+const TZ_OFFSET_MS = 8 * 3600_000;
+
+function dayKeyUtc8(date = new Date()) {
+  return new Date(date.getTime() + TZ_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function todayUtc8At(hour, minute, nowMs = Date.now()) {
+  const shifted = new Date(nowMs + TZ_OFFSET_MS);
+  return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate(), hour, minute, 0) - TZ_OFFSET_MS;
+}
+
+function nextDailyUtc8(hour, minute, nowMs = Date.now()) {
+  let t = todayUtc8At(hour, minute, nowMs);
+  if (t <= nowMs) t += 86_400_000;
+  return t;
+}
+
+/** 校验模型给出的当日作息（HH:MM），返回带 day 的对象或 null */
+export function normalizeSleepSchedule(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const schedule = {};
+  for (const key of ['sleepAt', 'wakeAt', 'napStart', 'napEnd']) {
+    const value = raw[key];
+    if (value === undefined || value === null || value === '') {
+      schedule[key] = null;
+      continue;
+    }
+    const text = String(value).trim();
+    if (parseHm(text) == null) return null;
+    schedule[key] = text;
+  }
+  if (!schedule.sleepAt && !schedule.wakeAt) return null;
+  schedule.day = raw.day || dayKeyUtc8();
+  return schedule;
+}
+
+/** 读取角色状态里的作息附加字段 */
+export function readSleepMeta(state = {}) {
+  let schedule = null;
+  if (state?.sleep_schedule) {
+    try {
+      schedule = typeof state.sleep_schedule === 'string' ? JSON.parse(state.sleep_schedule) : state.sleep_schedule;
+    } catch {
+      schedule = null;
+    }
+  }
+  return {
+    schedule,
+    since: state?.sleep_since || null,
+    nextChange: state?.next_sleep_change || null,
+  };
+}
+
+function writeSleepMeta(characterId, { schedule = null, since = null, nextChange = null } = {}) {
+  run(
+    'UPDATE character_state SET sleep_schedule = ?, sleep_since = ?, next_sleep_change = ? WHERE character_id = ?',
+    schedule ? JSON.stringify(schedule) : null,
+    since,
+    nextChange,
+    characterId,
+  );
+}
+
+/** 下一次入睡/起床时间点（ISO），用于即时刷新状态 */
+export function nextSleepChangeAt(schedule, sleepState, nowMs = Date.now()) {
+  if (!schedule) return null;
+  const state = normalizeSleepState(sleepState) || 'awake';
+  const target = state === 'awake' ? schedule.sleepAt : schedule.wakeAt;
+  if (!target) return null;
+  const hm = parseHm(target);
+  if (hm == null) return null;
+  return new Date(nextDailyUtc8(Math.floor(hm / 60), hm % 60, nowMs)).toISOString();
+}
+
+/**
+ * 安排下一次自动状态刷新（同一角色只保留一个 pending）。
+ * 取「设置间隔」与「next_sleep_change」中更早的时间；null/0 且无睡觉时间点时取消自动刷新。
+ */
+export function scheduleStatusRefresh({ userId, characterId, delayMs = null, settings = null } = {}) {
+  if (!isCharacterActiveById(userId, characterId)) {
+    cancelJobs(characterId, 'status_refresh');
+    return { scheduled: false, reason: 'character_disabled' };
+  }
   const st = settings || getSettings(characterId, userId);
-  const soft = softLimited == null ? limitState(userId).softLimited : Boolean(softLimited);
-  const ms = delayMs == null ? statusIntervalMs(st, soft) : Math.max(1_000, Math.round(delayMs));
+  const state = ensureState(characterId, userId);
+  const now = Date.now();
+  const candidates = [];
+  if (delayMs != null) candidates.push(now + Math.max(1_000, Math.round(delayMs)));
+  else {
+    const intervalSec = statusIntervalSecFor(st);
+    if (intervalSec != null) candidates.push(now + intervalSec * 1000);
+  }
+  const nextChange = state?.next_sleep_change ? Date.parse(state.next_sleep_change) : NaN;
+  if (Number.isFinite(nextChange) && nextChange > now) candidates.push(nextChange);
   cancelJobs(characterId, 'status_refresh');
-  const jobId = enqueue('status_refresh', new Date(Date.now() + ms).toISOString(), { soft }, { userId, characterId });
-  return { jobId, delayMs: ms, soft };
+  if (!candidates.length) return { scheduled: false, reason: 'interval_off' };
+  const due = Math.min(...candidates);
+  const jobId = enqueue('status_refresh', new Date(due).toISOString(), {}, { userId, characterId });
+  return { scheduled: true, jobId, delayMs: due - now };
 }
 
 /**
@@ -199,94 +348,122 @@ export function scheduleStatusRefresh({ userId, characterId, delayMs = null, sof
 export async function refreshStatus({ userId, characterId, provider = defaultProvider } = {}) {
   const character = getCharacter(userId, characterId);
   if (!character) return { ok: false, reason: 'character_not_found' };
-  const limits = limitState(userId);
-  if (limits.hardLimited) {
-    scheduleStatusRefresh({
+  if (!isCharacterActiveById(userId, characterId)) return { ok: false, reason: 'character_disabled' };
+  if (refreshing.has(characterId)) return { ok: false, reason: 'busy' };
+  refreshing.add(characterId);
+  try {
+    const limits = limitState(userId);
+    if (limits.hardLimited) {
+      scheduleStatusRefresh({ userId, characterId, delayMs: STATUS_HARD_RETRY_MS, settings: character.settings });
+      return { ok: false, reason: 'hard_limit' };
+    }
+
+    const state = ensureState(characterId, userId);
+    const settings = character.settings || getSettings(characterId, userId);
+    let world = '';
+    try {
+      world = await cachedWeatherPrompt(settings);
+    } catch {
+      world = '';
+    }
+    let parsed = null;
+    let model = null;
+    let rawStatus = null;
+    try {
+      const res = await provider.chatText(userId, {
+        task: 'status',
+        temperature: 0.9,
+        maxTokens: 500,
+        thinking: false,
+        json: true,
+        messages: [
+          { role: 'system', content: buildStatusPrompt(character, state, { softLimited: limits.softLimited, world }) },
+          { role: 'user', content: '现在请输出你的状态 JSON。' },
+        ],
+      });
+      model = res?.model || null;
+      recordUsage({ userId, characterId, kind: 'status', model, usage: res?.usage || {}, cost: res?.cost });
+      parsed = parseReply(res?.text ?? '', { segmentEnabled: false });
+      rawStatus = extractJson(res?.text ?? '') || null;
+    } catch (err) {
+      logger.warn('状态刷新失败', err?.message || err);
+      scheduleStatusRefresh({ userId, characterId, settings });
+      return { ok: false, reason: 'model_failed', error: err?.message || 'upstream_error' };
+    }
+
+    if (!parsed || parsed.type !== 'status' || !parsed.fields) {
+      scheduleStatusRefresh({ userId, characterId, settings });
+      return { ok: false, reason: 'parse_failed', raw: String(parsed?.content || '').slice(0, 200) };
+    }
+
+    const rawSchedule = rawStatus?.sleepSchedule ?? rawStatus?.sleep_schedule;
+    const modelSchedule = normalizeSleepSchedule(rawSchedule);
+    const current = readSleepMeta(state);
+    const today = dayKeyUtc8();
+    // 每天首次刷新由模型确定当日作息；当天后续刷新沿用，不再被模型改动
+    const firstToday = !current.schedule || current.schedule.day !== today;
+    const schedule = firstToday
+      ? modelSchedule
+        ? { ...modelSchedule, day: today }
+        : current.schedule
+          ? { ...current.schedule, day: today }
+          : null
+      : current.schedule;
+    const prevSleep = normalizeSleepState(state.sleep_state) || 'awake';
+    const modelSleep =
+      normalizeSleepState(rawStatus?.sleepState ?? rawStatus?.sleep_state) || prevSleep;
+    const sleepSince =
+      modelSleep === 'awake' ? null : prevSleep === modelSleep ? current.since || null : nowIso();
+    const nextChange = nextSleepChangeAt(schedule, modelSleep);
+
+    const nextState = {
+      motion: parsed.fields.motion || state.motion || '安静地待着',
+      psychology: parsed.fields.psychology || state.psychology || '',
+      mood: parsed.fields.mood || state.mood || '平静',
+      health: parsed.fields.health || state.health || '健康',
+      sleepState: modelSleep,
+    };
+    const flags = detectAbnormal({ ...nextState, ...(parsed.flags || {}) });
+    const scheduleKey = (value) => (value ? JSON.stringify({ ...value, day: undefined }) : 'null');
+    const same =
+      state.motion === nextState.motion &&
+      (state.psychology || '') === nextState.psychology &&
+      state.mood === nextState.mood &&
+      state.health === nextState.health &&
+      prevSleep === modelSleep &&
+      scheduleKey(current.schedule) === scheduleKey(schedule);
+
+    const sleepInfo = {
+      state: modelSleep,
+      since: sleepSince,
+      nextChange,
+      schedule,
+    };
+    const payload = { ...nextState, sleep: sleepInfo, flags, updatedAt: nowIso() };
+
+    if (same) {
+      // 状态未变化：不重复写消息/广播（修复状态重复）
+      scheduleStatusRefresh({ userId, characterId, settings });
+      broadcast(userId, { type: 'state', state: payload });
+      return { ok: true, duplicate: true, state: payload, flags, messageId: null, sleepState: modelSleep };
+    }
+
+    updateState(characterId, nextState);
+    writeSleepMeta(characterId, { schedule, since: sleepSince, nextChange });
+
+    const messageId = persistStatusMessage({
       userId,
       characterId,
-      delayMs: STATUS_HARD_RETRY_MS,
-      softLimited: true,
-      settings: character.settings,
+      content: JSON.stringify({ type: 'status', ...nextState, sleep: sleepInfo, ...flags }),
+      meta: { flags, mood: nextState.mood, health: nextState.health, sleepState: nextState.sleepState, model, sleep: sleepInfo },
     });
-    return { ok: false, reason: 'hard_limit' };
+
+    broadcast(userId, { type: 'state', state: payload });
+    scheduleStatusRefresh({ userId, characterId, settings });
+    return { ok: true, duplicate: false, state: payload, flags, messageId, sleepState: modelSleep };
+  } finally {
+    refreshing.delete(characterId);
   }
-
-  const state = ensureState(characterId, userId);
-  const settings = character.settings || getSettings(characterId, userId);
-  let world = '';
-  try {
-    const weather = await getWeatherSafe('宣城');
-    world = weather ? weatherPrompt(weather) : '';
-  } catch {
-    world = '';
-  }
-  let parsed = null;
-  let model = null;
-  let rawStatus = null;
-  try {
-    const res = await provider.chatText(userId, {
-      task: 'status',
-      temperature: 0.9,
-      maxTokens: 400,
-      thinking: false,
-      json: true,
-      messages: [
-        { role: 'system', content: buildStatusPrompt(character, state, { softLimited: limits.softLimited, world }) },
-        { role: 'user', content: '现在请输出你的状态 JSON。' },
-      ],
-    });
-    model = res?.model || null;
-    recordUsage({ userId, characterId, kind: 'status', model, usage: res?.usage || {}, cost: res?.cost });
-    parsed = parseReply(res?.text ?? '', { segmentEnabled: false });
-    rawStatus = extractJson(res?.text ?? '') || null;
-  } catch (err) {
-    logger.warn('状态刷新失败', err?.message || err);
-    scheduleStatusRefresh({
-      userId,
-      characterId,
-      softLimited: limits.softLimited,
-      settings,
-    });
-    return { ok: false, reason: 'model_failed', error: err?.message || 'upstream_error' };
-  }
-
-  if (!parsed || parsed.type !== 'status' || !parsed.fields) {
-    scheduleStatusRefresh({ userId, characterId, softLimited: limits.softLimited, settings });
-    return { ok: false, reason: 'parse_failed', raw: String(parsed?.content || '').slice(0, 200) };
-  }
-
-  const modelSleep =
-    normalizeSleepState(rawStatus?.sleepState ?? rawStatus?.sleep_state) ||
-    normalizeSleepState(state.sleep_state) ||
-    'awake';
-  const nextState = {
-    motion: parsed.fields.motion || state.motion || '安静地待着',
-    psychology: parsed.fields.psychology || state.psychology || '',
-    mood: parsed.fields.mood || state.mood || '平静',
-    health: parsed.fields.health || state.health || '健康',
-    sleepState: modelSleep,
-  };
-  const flags = detectAbnormal({ ...nextState, ...(parsed.flags || {}) });
-  updateState(characterId, nextState);
-
-  const messageId = persistStatusMessage({
-    userId,
-    characterId,
-    content: JSON.stringify({ type: 'status', ...nextState, ...flags }),
-    meta: { flags, mood: nextState.mood, health: nextState.health, sleepState: nextState.sleepState, model },
-  });
-
-  broadcast(userId, {
-    type: 'state',
-    state: {
-      ...nextState,
-      flags,
-      updatedAt: nowIso(),
-    },
-  });
-
-  scheduleStatusRefresh({ userId, characterId, softLimited: limits.softLimited, settings });
-  return { ok: true, state: nextState, flags, messageId, sleepState: nextState.sleepState };
 }
 
 /**
@@ -299,9 +476,11 @@ export function manualRefreshCooldown(userId, characterId) {
   const now = Date.now();
   const next = last ? last + MANUAL_REFRESH_COOLDOWN_MS : 0;
   const allowed = !last || now >= next;
+  const remainingMs = allowed ? 0 : Math.max(0, next - now);
   return {
     allowed,
-    retryAfterSec: allowed ? 0 : Math.max(1, Math.ceil((next - now) / 1000)),
+    retryAfterSec: remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0,
+    retryAfterMs: remainingMs,
     nextAllowedAt: new Date(allowed ? now : next).toISOString(),
     lastManualRefreshAt: lastRaw,
   };
@@ -314,13 +493,18 @@ export function manualRefreshCooldown(userId, characterId) {
  */
 export async function refreshStatusNow({ userId, characterId, provider = defaultProvider } = {}) {
   const character = getCharacter(userId, characterId);
-  if (!character) return { ok: false, reason: 'character_not_found', retryAfterSec: 0, nextAllowedAt: null };
+  if (!character) return { ok: false, reason: 'character_not_found', status: 404, retryAfterSec: 0, nextAllowedAt: null };
+  if (!isCharacterActiveById(userId, characterId)) {
+    return { ok: false, reason: 'character_disabled', status: 409, retryAfterSec: 0, nextAllowedAt: null };
+  }
   const cooldown = manualRefreshCooldown(userId, characterId);
   if (!cooldown.allowed) {
     return {
       ok: false,
       reason: 'cooldown',
+      status: 429,
       retryAfterSec: cooldown.retryAfterSec,
+      retryAfterMs: cooldown.retryAfterMs,
       nextAllowedAt: cooldown.nextAllowedAt,
     };
   }
@@ -331,6 +515,7 @@ export async function refreshStatusNow({ userId, characterId, provider = default
   return {
     ...result,
     retryAfterSec: after.retryAfterSec,
+    retryAfterMs: after.retryAfterMs,
     nextAllowedAt: after.nextAllowedAt,
   };
 }
@@ -345,6 +530,7 @@ export function bootstrapStatusJobs({ limit = 50 } = {}) {
   let index = 0;
   for (const row of rows) {
     if (nextJob(row.id, 'status_refresh')) continue;
+    if (!isCharacterActiveById(row.user_id, row.id)) continue;
     const delay = 3_000 + index * 2_000;
     index++;
     try {
@@ -371,5 +557,15 @@ export default {
   normalizeSleepState,
   manualRefreshCooldown,
   refreshStatusNow,
+  statusIntervalSecFor,
+  normalizeSleepSchedule,
+  readSleepMeta,
+  nextSleepChangeAt,
   MANUAL_REFRESH_COOLDOWN_MS,
+  STATUS_INTERVAL_MIN_SEC,
+  STATUS_INTERVAL_MAX_SEC,
+  DEFAULT_STATUS_INTERVAL_SEC,
+  cachedWeatherPrompt,
+  clearWeatherCache,
+  WEATHER_TTL_MS,
 };

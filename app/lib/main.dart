@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/app_state.dart';
+import 'core/appearance.dart';
 import 'core/global.dart';
 import 'core/layout.dart';
 import 'core/theme.dart';
@@ -35,7 +36,12 @@ class _CocoaAppState extends State<CocoaApp> {
         (Route<dynamic> route) => false,
       );
     };
-    _state.boot();
+    _state.boot().then((_) async {
+      if (_state.fontPath != null && _state.fontPath!.isNotEmpty) {
+        await loadImportedFont(_state.fontPath!);
+        if (mounted) setState(() {});
+      }
+    });
   }
 
   @override
@@ -48,12 +54,19 @@ class _CocoaAppState extends State<CocoaApp> {
   Widget build(BuildContext context) {
     return AppScope(
       state: _state,
-      child: MaterialApp(
+      child: AnimatedBuilder(
+        animation: _state,
+        builder: (BuildContext context, Widget? _) => MaterialApp(
         title: 'Cocoa',
         debugShowCheckedModeBanner: false,
         navigatorKey: appNavigatorKey,
         scaffoldMessengerKey: appMessengerKey,
-        theme: buildAppTheme(),
+        theme: buildAppTheme(
+          fontFamily: _state.fontFamily == 'system'
+              ? null
+              : _state.fontFamily,
+          motion: _state.motion,
+        ),
         locale: const Locale('zh', 'CN'),
         supportedLocales: const <Locale>[
           Locale('zh', 'CN'),
@@ -66,9 +79,15 @@ class _CocoaAppState extends State<CocoaApp> {
         ],
         // v1.1.0：手机锁竖屏、平板允许横竖屏，随尺寸变化重新应用。
         builder: (BuildContext context, Widget? child) => OrientationGate(
-          child: child ?? const SizedBox.shrink(),
+          child: MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: TextScaler.linear(_state.fontScale),
+            ),
+            child: child ?? const SizedBox.shrink(),
+          ),
         ),
         home: const SplashPage(),
+      ),
       ),
     );
   }

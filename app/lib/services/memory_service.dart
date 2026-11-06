@@ -7,6 +7,18 @@ class MemoryService {
 
   final ApiClient api;
 
+  /// v1.5.0：自动从对话中记住用户特征。
+  Future<bool> autoMemory() async {
+    final dynamic r = await api.get('/memory/preferences');
+    return asBool(asMap(r)['autoMemory'], true);
+  }
+
+  Future<void> saveAutoMemory(bool value) async {
+    await api.put('/memory/preferences', body: <String, dynamic>{
+      'autoMemory': value,
+    });
+  }
+
   Future<MemoryGraph> graph(String characterId) async {
     final dynamic r = await api.get(
       '/memory/graph',

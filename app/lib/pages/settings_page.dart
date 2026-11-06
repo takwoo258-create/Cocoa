@@ -5,6 +5,7 @@ import '../core/app_state.dart';
 import '../core/constants.dart';
 import '../core/global.dart';
 import '../core/theme.dart';
+import '../core/appearance.dart';
 import 'settings/about_page.dart';
 import 'settings/agent_page.dart';
 import 'settings/character_config_page.dart';
@@ -12,6 +13,9 @@ import 'settings/limits_page.dart';
 import 'settings/model_routing_page.dart';
 import 'settings/profile_page.dart';
 import 'settings/service_config_page.dart';
+import 'settings/plaza_page.dart';
+import 'settings/templates_page.dart';
+import 'settings/theme_page.dart';
 import 'settings/shares_page.dart';
 
 /// v1.0.1：设置首页改为分组二级菜单。
@@ -107,7 +111,9 @@ class SettingsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppState state = AppScope.of(context);
     final String role = state.isAdmin ? '超级管理员' : '普通用户';
-    return ListView(
+    return Container(
+      decoration: appearanceDecoration(state),
+      child: ListView(
       padding: pagePadding(context, top: 0, bottom: 26),
       children: <Widget>[
         Container(
@@ -209,6 +215,27 @@ class SettingsPage extends StatelessWidget {
           ),
           _tile(
             context,
+            icon: Icons.palette_outlined,
+            title: '主题与外观',
+            subtitle: '壁纸 / 字体 / 字号 / 动效',
+            page: const ThemePage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.public,
+            title: '共享广场',
+            subtitle: '本服 / 全球模型与人设模板',
+            page: const PlazaPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.bookmark_border,
+            title: '人设模板',
+            subtitle: '保存 / 导入 / 应用创建角色',
+            page: const TemplatesPage(),
+          ),
+          _tile(
+            context,
             icon: Icons.swap_horiz,
             title: '模型分享',
             subtitle: '分享 / 索要模型，设置时长或截止时间',
@@ -231,6 +258,7 @@ class SettingsPage extends StatelessWidget {
           ),
         ]),
         _group('智能体', <Widget>[
+          const _AutoMemorySwitch(),
           _tile(
             context,
             icon: Icons.psychology_outlined,
@@ -266,6 +294,61 @@ class SettingsPage extends StatelessWidget {
           ),
         ),
       ],
+      ),
+    );
+  }
+}
+
+
+class _AutoMemorySwitch extends StatefulWidget {
+  const _AutoMemorySwitch();
+
+  @override
+  State<_AutoMemorySwitch> createState() => _AutoMemorySwitchState();
+}
+
+class _AutoMemorySwitchState extends State<_AutoMemorySwitch> {
+  bool _value = true;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final AppState state = AppScope.read(context);
+      try {
+        final bool v = await state.memoryService.autoMemory();
+        if (mounted) setState(() => _value = v);
+      } catch (_) {}
+      if (mounted) setState(() => _loading = false);
+    });
+  }
+
+  Future<void> _toggle(bool v) async {
+    setState(() => _value = v);
+    final AppState state = AppScope.read(context);
+    try {
+      await state.memoryService.saveAutoMemory(v);
+      if (mounted) showToast(v ? '已开启自动记忆' : '已关闭自动记忆');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _value = !v);
+        showToast('保存失败：$e', isError: true);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      dense: true,
+      title: const Text('自动从对话中记住我的特征', style: TextStyle(fontSize: 13)),
+      subtitle: const Text(
+        '开启后角色会从聊天中提取你的偏好与特征形成记忆点',
+        style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+      ),
+      value: _value,
+      onChanged: _loading ? null : _toggle,
     );
   }
 }

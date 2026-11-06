@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Caddy 安装与配置（在目标服务器以 root 执行）
 # 用法：bash deploy/caddy-setup.sh [DOMAIN]
-#   DOMAIN 默认 120-26-204-70.sslip.io
+#   DOMAIN 必填：你的域名（sslip.io 泛解析域名或自备域名）
 #
 # 做的事：
 #   1. 下载官方静态二进制（caddyserver.com/api/download，含 systemd 单元）
@@ -11,7 +11,7 @@
 #   5. 打印证书申请状态（Let's Encrypt 需要 80/443 对公网可达）
 set -Eeuo pipefail
 
-DOMAIN="${1:-120-26-204-70.sslip.io}"
+DOMAIN="${1:-${COCOA_DOMAIN:?请提供域名：deploy/caddy-setup.sh <domain> 或设置 COCOA_DOMAIN}}"
 CADDY_VER="${CADDY_VER:-}"   # 留空用官方 latest 构建
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -59,7 +59,7 @@ chown -R caddy:caddy /var/lib/caddy /var/log/caddy
 # 3) Caddyfile（校验 → 必要时去掉不被支持项）
 install -d /etc/caddy
 install -m 644 "$SRC_DIR/Caddyfile" /etc/caddy/Caddyfile
-sed -i "s/120-26-204-70\.sslip\.io/${DOMAIN}/g" /etc/caddy/Caddyfile
+sed -i "s/<DOMAIN>/${DOMAIN}/g" /etc/caddy/Caddyfile
 if ! /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/tmp/caddy-validate.log 2>&1; then
   warn "Caddyfile 校验失败，尝试去掉 renewal_window_ratio 后重试："
   tail -3 /tmp/caddy-validate.log >&2 || true

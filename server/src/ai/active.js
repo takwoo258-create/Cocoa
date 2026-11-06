@@ -12,18 +12,35 @@ import { recordUsage } from './usage.js';
 import { parseReply, clampSendSec } from './reply.js';
 import { limitState } from './context.js';
 import { effectiveSleep, sleepMode } from './status.js';
+import { isCharacterIdActive } from './activity.js';
 import logger from '../core/logger.js';
 
-export const WAIT_MIN_MS = 60_000;
-export const WAIT_MAX_MS = 80_000;
+// v1.5.0：回复后等待 90 秒起；下一次由模型 timesec 决定
+/** timesec 归一化为秒：1-86400，缺省回退 90；误传毫秒时自动折算 */
+export function normalizeTimesec(value, fallbackSec = 90) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallbackSec;
+  const seconds = n > 86_400 && n <= 86_400_000 ? n / 1000 : n;
+  return Math.min(86_400, Math.max(1, Math.round(seconds)));
+}
+
+/** timesec → 下一次等待的毫秒数（due = now + timesec*1000） */
+export function timesecToDelayMs(value, fallbackSec = 90) {
+  return normalizeTimesec(value, fallbackSec) * 1000;
+}
+
+export const WAIT_MIN_MS = 90_000;
+export const WAIT_MAX_MS = 120_000;
 
 export const TIMEOUT_INSTRUCTION = [
   '系统提示：用户已经超过等待期仍未回复（这条后台消息的内容是：用户未回复）。',
-  '请判断这次聊天是否适合继续追问：',
-  '- 适合追问：按正常被动回复协议输出 {"type":"message","content":"一句简短自然的追问"}；',
-  '- 不适合追问：结束本次聊天（不是关闭会话窗口），并给出下一次主动开启聊天的内容：',
-  '  {"type":"subjective","content":"下一次主动发出的消息","sendsec":<60-3600 的秒数>}。',
-  '只输出一个 JSON 对象。',
+  '请判断这次聊天是否适合继续追问，并用 timesec 指定下一次追问/主动消息的间隔（秒）：',
+  '- 很适合追问、答案对角色重要：timesec 取 60-120；',
+  '- 不太重要：timesec 取 600-1800；',
+  '- 有新闻/生活话题想分享：可以任意更久。',
+  '- 适合追问：{"type":"message","content":"一句简短自然的追问","timesec":<秒>}；',
+  '- 不适合追问：{"type":"subjective","content":"下一次主动发出的消息","timesec":<秒>}。',
+  'sendsec 仍兼容，作为 timesec 的别名。只输出一个 JSON 对象。',
 ].join('\n');
 
 export const ACTIVE_INSTRUCTION = [
@@ -92,6 +109,9 @@ export function activeReplyEnabled(userId, character) {
  * @returns {{scheduled:boolean, delayMs?:number, deadline?:string, jobId?:string, reason?:string}}
  */
 export function markAgentSent({ userId, characterId, delayMs = null } = {}) {
+  if (!isCharacterIdActive(userId, characterId)) {
+    return { scheduled: false, reason: 'character_disabled' };
+  }
   const character = getCharacter(userId, characterId);
   if (!activeReplyEnabled(userId, character)) {
     upsertWaitState({ userId, characterId, mode: 'idle', deadline: null, attempts: 0 });
@@ -151,6 +171,10 @@ export async function handleWaitTimeout({ userId, characterId, provider = null }
     return { ok: false, reason: 'user_replied' };
   }
 
+  if (!isCharacterIdActive(userId, characterId)) {
+    markUserReplied({ userId, characterId });
+    return { ok: false, reason: 'character_disabled' };
+  }
   const limits = limitState(userId);
   if (limits.hardLimited) {
     markUserReplied({ userId, characterId });
@@ -164,13 +188,58 @@ export async function handleWaitTimeout({ userId, characterId, provider = null }
     return { ok: false, reason: 'character_not_found' };
   }
 
-  upsertWaitState({
-    userId,
-    characterId,
-    mode: 'waiting',
-    deadline: null,
-    attempts: (Number(ws.attempts) || 0) + 1,
-  });
+  const attempts = (Number(ws.attempts) || 0) + 1;
+  upsertWaitState({ userId, characterId, mode: 'waiting', deadline: null, attempts });
+
+  // 多次追问无果：写入记忆点、影响心情/态度，再发角色想说的话
+  if (attempts >= 3) {
+    try {
+      const memory = await import('./memory.js');
+      memory.insertMemory(userId, characterId, {
+        big: '关系',
+        small: '主动回应',
+        content: '用户多次没有回复角色的主动关心，角色有些失落，但也更在意对方现在的状况。',
+        weight: 0.6,
+        source: 'active_reply',
+      });
+    } catch (err) {
+      logger.warn('追问无果记忆写入失败', err?.message || err);
+    }
+    try {
+      updateState(characterId, { mood: '有点失落', psychology: '在意对方怎么一直没有回音' });
+      const stateRow = ensureState(characterId, userId);
+      broadcast(userId, {
+        type: 'state',
+        characterId,
+        state: {
+          motion: stateRow.motion,
+          psychology: stateRow.psychology,
+          mood: stateRow.mood,
+          health: stateRow.health,
+          sleepState: stateRow.sleep_state,
+          updatedAt: nowIso(),
+        },
+      });
+    } catch (err) {
+      logger.warn('追问无果状态更新失败', err?.message || err);
+    }
+    try {
+      const { runGeneration } = await import('./chat.js');
+      const out = await runGeneration({
+        userId,
+        characterId,
+        reason: 'active_timeout',
+        provider,
+        triggerText: '',
+        extraInstruction:
+          '系统提示：你已经多次主动关心用户但对方一直没有回复。请不要再连续追问，写一句你此刻真正想对用户说的话（可以是关心、失落或留个台阶），按 {"type":"message","content":"...","timesec":<秒>} 输出。',
+      });
+      return { ok: true, attempts, memoryWritten: true, ...out };
+    } catch (err) {
+      logger.warn('追问无果后的收尾失败', err?.message || err);
+      return { ok: false, reason: 'generation_failed', attempts, error: err?.message || 'upstream_error' };
+    }
+  }
 
   try {
     const { runGeneration } = await import('./chat.js');
@@ -182,7 +251,7 @@ export async function handleWaitTimeout({ userId, characterId, provider = null }
       triggerText: '',
       extraInstruction: TIMEOUT_INSTRUCTION,
     });
-    return { ok: true, ...out };
+    return { ok: true, attempts, ...out };
   } catch (err) {
     logger.warn('等待期处理失败', err?.message || err);
     return { ok: false, reason: 'generation_failed', error: err?.message || 'upstream_error' };
@@ -191,6 +260,7 @@ export async function handleWaitTimeout({ userId, characterId, provider = null }
 
 /** POST /active-reply：立刻生成一条主动消息 */
 export async function triggerActiveReply({ userId, characterId, provider = null } = {}) {
+  if (!isCharacterIdActive(userId, characterId)) return { ok: false, reason: 'character_disabled' };
   const limits = limitState(userId);
   if (limits.hardLimited) return { ok: false, reason: 'hard_limit', notice: 'Token 已达硬性限额，角色服务已暂停' };
   const character = getCharacter(userId, characterId);
@@ -231,6 +301,7 @@ export const WAKEUP_REPLY_INSTRUCTION =
  * @returns {Promise<{ok:boolean, wakeup:0|1, reason?:string, error?:string}>}
  */
 export async function judgeWakeup({ userId, characterId, text = '', provider = null } = {}) {
+  if (!isCharacterIdActive(userId, characterId)) return { ok: false, wakeup: 0, reason: 'character_disabled' };
   const prov = provider || (await import('./chat.js')).getChatProvider();
   const character = getCharacter(userId, characterId);
   if (!character) return { ok: false, wakeup: 0, reason: 'character_not_found' };
@@ -290,6 +361,8 @@ export async function judgeWakeup({ userId, characterId, text = '', provider = n
 
 export default {
   nextWaitMs,
+  normalizeTimesec,
+  timesecToDelayMs,
   markAgentSent,
   markUserReplied,
   getWaitState,

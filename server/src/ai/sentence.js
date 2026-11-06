@@ -3,12 +3,13 @@
 // 判定为 no → 等待 30 秒（新消息到达即取消）；判定为 yes 或判定失败 → 直接生成回复。
 import * as defaultProvider from './provider.js';
 
-export const SENTENCE_WAIT_MS = 30_000;
-export const SENTENCE_MAX_WAIT_MS = 60_000;
+// v1.5.0：连续碎片最多等待 6 秒（从第一条未完成消息起算），新消息到达重置/取消
+export const SENTENCE_WAIT_MS = 6_000;
+export const SENTENCE_MAX_WAIT_MS = 6_000;
 export const SENTENCE_MAX_TOKENS = 4;
 
 /**
- * 同一段连续输入的等待上限：每条新消息最多再等 30s，但从第一条未完成消息起算总等待不超过 60s。
+ * 同一段连续输入的等待上限：从第一条未完成消息起算最多等 6s；新消息沿用同一 firstAt。
  * @returns {number} 毫秒时间戳
  */
 export function sentenceWaitDueMs({ now = Date.now(), firstAt = null } = {}) {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../core/api_client.dart';
+import '../core/app_state.dart';
 import '../core/json_utils.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
@@ -180,7 +181,9 @@ class MessageBubble extends StatelessWidget {
       );
     }
     final String thinking = asString(message.meta['thinking']);
-    if (message.fromAgent && thinking.isNotEmpty) {
+    if (message.fromAgent &&
+        thinking.isNotEmpty &&
+        AppScope.of(context).thinkingMode) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -329,7 +332,11 @@ class _ThinkingPanelState extends State<_ThinkingPanel> {
         children: <Widget>[
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
-            child: Row(
+            child: SizedBox(
+              width: double.infinity,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 const Icon(
@@ -346,12 +353,16 @@ class _ThinkingPanelState extends State<_ThinkingPanel> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                const Spacer(),
                 Icon(
                   _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 14,
+                  size: 16,
                   color: AppColors.cocoa,
                 ),
+                const SizedBox(width: 4),
               ],
+                ),
+              ),
             ),
           ),
           AnimatedCrossFade(

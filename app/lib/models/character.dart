@@ -142,6 +142,8 @@ class CharacterSettings {
     this.qzoneEnabled = false,
     this.userAddress = '',
     this.qqEnabled = false,
+    this.enabled = true,
+    this.weatherCity = '宣城',
   });
 
   final List<RssFeed> rss;
@@ -164,6 +166,12 @@ class CharacterSettings {
   /// v1.2.0：该角色是否接入 QQ（全账号仅一个角色可开启）。
   final bool qqEnabled;
 
+  /// v1.5.0：角色运行状态；关闭后暂停所有活动并停止 token 消耗。
+  final bool enabled;
+
+  /// v1.5.0：角色所在世界的天气城市。
+  final String weatherCity;
+
   static const CharacterSettings defaults = CharacterSettings();
 
   factory CharacterSettings.fromJson(Map<String, dynamic> j) =>
@@ -181,6 +189,8 @@ class CharacterSettings {
         qzoneEnabled: asBool(j['qzoneEnabled']),
         userAddress: asString(j['userAddress']),
         qqEnabled: asBool(j['qqEnabled']),
+        enabled: asBool(j['enabled'], true),
+        weatherCity: asString(j['weatherCity'], '宣城'),
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -197,6 +207,8 @@ class CharacterSettings {
         'qzoneEnabled': qzoneEnabled,
         'userAddress': userAddress,
         'qqEnabled': qqEnabled,
+        'enabled': enabled,
+        'weatherCity': weatherCity,
       };
 
   CharacterSettings copyWith({
@@ -213,6 +225,8 @@ class CharacterSettings {
     bool? qzoneEnabled,
     String? userAddress,
     bool? qqEnabled,
+    bool? enabled,
+    String? weatherCity,
   }) =>
       CharacterSettings(
         rss: rss ?? this.rss,
@@ -228,6 +242,8 @@ class CharacterSettings {
         qzoneEnabled: qzoneEnabled ?? this.qzoneEnabled,
         userAddress: userAddress ?? this.userAddress,
         qqEnabled: qqEnabled ?? this.qqEnabled,
+        enabled: enabled ?? this.enabled,
+        weatherCity: weatherCity ?? this.weatherCity,
       );
 }
 

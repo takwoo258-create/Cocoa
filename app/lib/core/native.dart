@@ -33,3 +33,14 @@ Future<bool> downloadApk(String url, String filename) async {
     return false;
   }
 }
+
+/// v1.5.0：选择本地 ttf/otf 字体，返回应用私有目录路径。
+Future<String?> pickFontFile() async {
+  try {
+    return await _nativeChannel.invokeMethod<String>('pickFont');
+  } on MissingPluginException {
+    return null;
+  } on PlatformException {
+    return null;
+  }
+}

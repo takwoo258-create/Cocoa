@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -14,6 +16,7 @@ class StorageService {
   static const String _kLastTab = 'cocoa.lastTab';
   static const String _kIgnoredVersionTag = 'cocoa.ignoredVersionTag';
   static const String _kUpdateSnoozeDate = 'cocoa.updateSnoozeDate';
+  static const String _kAppearance = 'cocoa.appearance';
 
   Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
 
@@ -111,6 +114,23 @@ class StorageService {
   Future<String?> readIgnoredVersionTag() async {
     final SharedPreferences p = await _prefs;
     return p.getString(_kIgnoredVersionTag);
+  }
+
+  Future<Map<String, dynamic>> readAppearance() async {
+    final SharedPreferences p = await _prefs;
+    final String? raw = p.getString(_kAppearance);
+    if (raw == null || raw.isEmpty) return <String, dynamic>{};
+    try {
+      final dynamic d = jsonDecode(raw);
+      return d is Map ? d.cast<String, dynamic>() : <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
+  }
+
+  Future<void> writeAppearance(Map<String, dynamic> data) async {
+    final SharedPreferences p = await _prefs;
+    await p.setString(_kAppearance, jsonEncode(data));
   }
 
   Future<String?> readUpdateSnoozeDate() async {

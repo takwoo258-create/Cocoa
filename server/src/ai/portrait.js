@@ -158,6 +158,18 @@ export async function runPortrait(job, payload = {}) {
       log.warn('画像任务找不到角色', { userId, characterId });
       return { skipped: true, reason: 'character_not_found' };
     }
+    if (character.settings?.enabled === false) {
+      log.debug('角色已关闭，跳过画像生成', { userId, characterId });
+      return { skipped: true, reason: 'character_disabled' };
+    }
+    const stateRow = get('SELECT * FROM character_state WHERE character_id = ?', characterId) || {};
+    if (body.force !== true && stateRow.last_portrait_at) {
+      const since = Date.now() - Date.parse(stateRow.last_portrait_at);
+      if (Number.isFinite(since) && since < 3600_000) {
+        log.debug('画像刚生成过，跳过重复任务', { userId, characterId });
+        return { skipped: true, reason: 'recent_portrait', lastPortraitAt: stateRow.last_portrait_at };
+      }
+    }
 
     // 处理期间的统一提示语（与上下文压缩一致）
     broadcast(userId, { type: 'notice', content: MEMORY_NOTICE, characterId });

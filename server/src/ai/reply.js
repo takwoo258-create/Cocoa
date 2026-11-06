@@ -10,6 +10,18 @@
 
 export const WAIT_MAX = 8;
 export const WAIT_MIN = 0;
+// v1.5.0：角色打字速度 0.3~0.5 秒/字，模型可显式给 sendsec
+export const TYPING_SEC_PER_CHAR = 0.4;
+export const SEND_SEC_MIN = 0;
+export const SEND_SEC_MAX = 20; // 分段打字秒数 1-20s
+
+
+/** 依据字数估算打字秒数（0.3~0.5s/字，取中间值 0.4s） */
+export function typingSecondsFor(content) {
+  const text = String(content ?? '').replace(/\s+/g, '');
+  if (!text) return 0;
+  return Math.min(SEND_SEC_MAX, Math.max(1, Math.round(text.length * TYPING_SEC_PER_CHAR)));
+}
 const TYPES = new Set(['message', 'profile', 'status', 'subjective', 'wakeup']);
 
 function asText(v) {
@@ -110,13 +122,20 @@ export function extractJson(text) {
 function normalizeSegmentsFromAgent(agent, content, segmentEnabled) {
   const items = Array.isArray(agent)
     ? agent
-        .map((a) => ({ content: asText(a?.content).trim(), wait: clampWait(a?.wait) }))
+        .map((a) => {
+          const text = asText(a?.content).trim();
+          return {
+            content: text,
+            wait: clampWait(a?.wait),
+            sendsec: a?.sendsec === undefined ? typingSecondsFor(text) : Math.min(SEND_SEC_MAX, Math.max(1, Math.round(Number(a.sendsec) || 0))),
+          };
+        })
         .filter((a) => a.content)
     : [];
   if (!items.length) return null;
   if (!segmentEnabled) {
     const joined = items.map((a) => a.content).join('');
-    return [{ content: joined || content, wait: 0 }];
+    return [{ content: joined || content, wait: 0, sendsec: typingSecondsFor(joined || content) }];
   }
   return items;
 }
@@ -141,7 +160,7 @@ function splitContentByDevide(content, devide, wait) {
   const groups = [];
   const per = Math.ceil(parts.length / count);
   for (let i = 0; i < parts.length; i += per) groups.push(parts.slice(i, i + per).join(''));
-  return groups.slice(0, count).map((content2, idx) => ({ content: content2, wait: idx === 0 ? 0 : clampWait(wait) }));
+  return groups.slice(0, count).map((content2, idx) => ({ content: content2, wait: idx === 0 ? 0 : clampWait(wait), sendsec: typingSecondsFor(content2) }));
 }
 
 /**
@@ -175,13 +194,15 @@ export function normalizeReply(obj, { segmentEnabled = true, rawText = '' } = {}
   }
 
   if (type === 'subjective') {
+    const interval = clampSendSec(src.timesec ?? src.sendsec, 60);
     return {
       type,
       content: fallbackContent,
       segments: [],
       devide: 1,
       wait: 0,
-      sendsec: clampSendSec(src.sendsec, 60),
+      sendsec: interval,
+      timesec: interval,
     };
   }
 
@@ -202,6 +223,7 @@ export function normalizeReply(obj, { segmentEnabled = true, rawText = '' } = {}
     segments,
     devide: segments.length,
     wait: topWait,
+    timesec: clampSendSec(src.timesec, 0),
   };
 }
 
@@ -236,4 +258,4 @@ export function parseTypedReply(text, type) {
   return normalized.type === type ? normalized : null;
 }
 
-export default { extractJson, parseReply, normalizeReply, parseTypedReply, clampWait, clampSendSec };
+export default { extractJson, parseReply, normalizeReply, parseTypedReply, clampWait, clampSendSec, typingSecondsFor };

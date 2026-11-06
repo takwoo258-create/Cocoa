@@ -8,6 +8,7 @@ import path from 'node:path';
 
 process.env.COCOA_DATA_DIR = process.env.COCOA_DATA_DIR || '/tmp/cocoa-ai-chat';
 process.env.PORT = process.env.PORT || '18082';
+process.env.COCOA_DISABLE_WEATHER = '1';
 const DATA_DIR = process.env.COCOA_DATA_DIR;
 fs.rmSync(DATA_DIR, { recursive: true, force: true });
 
@@ -92,7 +93,7 @@ function makeMedia(kind, { content = 'fake-bytes', ext = kind === 'image' ? 'png
 }
 
 function fakeProvider(overrides = {}) {
-  const state = { sentence: 'yes', calls: [], searchCalls: [], lastSystemText: '' };
+  const state = { sentence: 'yes', calls: [], searchCalls: [], synthesizeCalls: [], visionCalls: 0, lastSystemText: '' };
   const impl = {
     async chatText(userIdArg, opts) {
       state.calls.push({ task: opts.task, thinking: opts.thinking, temperature: opts.temperature, maxTokens: opts.maxTokens });
@@ -125,7 +126,7 @@ function fakeProvider(overrides = {}) {
       if (systemText.includes('判断角色是否要为用户醒来')) {
         return { text: JSON.stringify({ type: 'wakeup', wakeup: 1 }), usage: { input: 5, output: 2 }, model: 'fake-wake' };
       }
-      if (systemText.includes('被用户强行叫醒')) {
+      if (/被用户(强行)?叫醒/.test(systemText)) {
         return {
           text: JSON.stringify({ type: 'message', content: '唔…我醒了，怎么啦', agent: [{ content: '唔…我醒了，怎么啦', wait: 0 }] }),
           usage: { input: 10, output: 8 },
@@ -133,6 +134,10 @@ function fakeProvider(overrides = {}) {
         };
       }
       if (systemText.includes('超过等待期仍未回复')) {
+        if (typeof overrides.main === 'function') {
+          const custom = await overrides.main({ systemText, opts, state });
+          if (custom !== undefined) return custom;
+        }
         return {
           text: JSON.stringify({ type: 'subjective', content: '下一次主动消息', sendsec: 60 }),
           usage: { input: 10, output: 8 },
@@ -161,12 +166,14 @@ function fakeProvider(overrides = {}) {
       return { text: '这是语音里的内容', model: 'fake-stt' };
     },
     async visionDescribe() {
+      state.visionCalls += 1;
       if (overrides.visionFails) throw new Error('vision down');
       return { text: '照片里有一只橘猫', model: 'fake-vision', usage: { input: 5, output: 5 } };
     },
-    async synthesize() {
+    async synthesize(userIdArg, text, opts = {}) {
+      state.synthesizeCalls.push({ text, opts });
       if (overrides.ttsFails) throw new Error('tts down');
-      return { buffer: Buffer.from('fake-mp3-bytes'), mime: 'audio/mpeg' };
+      return { buffer: Buffer.from('fake-mp3-bytes'), mime: 'audio/mpeg', provider: 'fake' };
     },
     async webSearch(userIdArg, query, opts) {
       state.searchCalls.push({ userId: userIdArg, query, opts });
@@ -345,9 +352,9 @@ test('sentence: cleanVerdict 容错，no 判定为未完成，失败按 yes', as
   assert.equal(failed.complete, true);
   assert.equal(failed.failed, true);
   assert.ok(character.id);
-  // 30s 单次等待 + 60s 连续输入总上限
-  assert.equal(sentence.sentenceWaitDueMs({ now: 1_000, firstAt: 1_000 }), 31_000);
-  assert.equal(sentence.sentenceWaitDueMs({ now: 50_000, firstAt: 1_000 }), 61_000); // firstAt + 60s 先到
+  // v1.5.0：从第一条未完成消息起算最多等 6s
+  assert.equal(sentence.sentenceWaitDueMs({ now: 1_000, firstAt: 1_000 }), 7_000);
+  assert.equal(sentence.sentenceWaitDueMs({ now: 50_000, firstAt: 1_000 }), 7_000); // firstAt + 6s 先到
 });
 
 test('status: 作息判定（跨零点睡眠、午睡、关闭）与固定文案', () => {
@@ -375,8 +382,13 @@ test('status: 异常判定与软限额下的 4 小时间隔', () => {
   assert.equal(status.detectAbnormal({ health: '有点发烧', mood: '开心' }).healthAbnormal, true);
   assert.equal(status.detectAbnormal({ health: '健康', mood: '烦闷' }).moodAbnormal, true);
   assert.equal(status.detectAbnormal({ health: '健康', mood: '平静', healthAbnormal: true }).healthAbnormal, true);
-  assert.equal(status.statusIntervalMs({ statusIntervalMin: 10 }, false), 10 * 60_000);
-  assert.equal(status.statusIntervalMs({ statusIntervalMin: 10 }, true), 4 * 3600_000);
+  // v1.5.0：间隔由 statusIntervalSec 决定；null/0=不自动刷新，旧的 statusIntervalMin 仍兼容
+  assert.equal(status.statusIntervalMs({ statusIntervalMin: 10 }), 10 * 60_000);
+  assert.equal(status.statusIntervalMs({ statusIntervalSec: 300 }), 300_000);
+  assert.equal(status.statusIntervalMs({ statusIntervalSec: null }), null);
+  assert.equal(status.statusIntervalMs({ statusIntervalSec: 0 }), null);
+  assert.equal(status.statusIntervalSecFor({ statusIntervalSec: 1 }), 300);
+  assert.equal(status.statusIntervalSecFor({ statusIntervalSec: 86_400 * 90 }), 86_400 * 30);
 });
 
 // ---------------- 状态刷新（假 provider） ----------------
@@ -474,11 +486,11 @@ test('chat: 文本消息落库加密、生成回复、分段任务与等待期',
   assert.equal(meta1.wait, 2);
   assert.equal(pendingJobs(character.id, 'segment_send').length, 0);
 
-  // 等待期：60-80 秒 + active_reply 任务
+  // 等待期：90 秒起 + active_reply 任务
   const ws = active.getWaitState(userId, character.id);
   assert.equal(ws.mode, 'waiting');
   const delay = new Date(ws.deadline).getTime() - new Date(ws.last_agent_at).getTime();
-  assert.ok(delay >= 59_000 && delay <= 81_000, `等待期应在 60-80s，实际 ${delay}ms`);
+  assert.ok(delay >= 89_000 && delay <= 121_000, `等待期应在 90-120s，实际 ${delay}ms`);
   assert.equal(pendingJobs(character.id, 'active_reply').length, 1);
 
 });
@@ -563,13 +575,13 @@ test('chat: 句子未完整时等 30 秒（新消息可取消），到点再生�
   const jobs = pendingJobs(character.id, 'sentence_wait');
   assert.equal(jobs.length, 1);
   const delay = new Date(jobs[0].due_at).getTime() - Date.now();
-  assert.ok(delay > 25_000 && delay <= 30_500, `等待应约 30s，实际 ${delay}ms`);
+  assert.ok(delay > 4_000 && delay <= 6_500, `等待应约 6s，实际 ${delay}ms`);
 
   // 新消息取消旧计时
   fake.state.sentence = 'yes';
   const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '我今天想说的是我升职了' });
   assert.equal(second.reason, 'generating');
-  assert.equal(pendingJobs(character.id, 'sentence_wait').length, 0, '新消息应取消旧的 30s 等待');
+  assert.equal(pendingJobs(character.id, 'sentence_wait').length, 0, '新消息应取消旧的 6s 等待');
   await second.waitForReply;
 
   // 再验证到点触发
@@ -582,7 +594,7 @@ test('chat: 句子未完整时等 30 秒（新消息可取消），到点再生�
   await waitFor(() => all("SELECT id FROM messages WHERE character_id = ? AND role = 'agent'", character.id).length > before);
 });
 
-test('sentence: 连续 3 条 incomplete 受 60s 总上限约束，达到上限直接生成', { timeout: 20_000 }, async () => {
+test('sentence: 连续 3 条 incomplete 受 6s 总上限约束，达到上限直接生成', { timeout: 20_000 }, async () => {
   const character = freshCharacter();
   const fake = fakeProvider();
   fake.state.sentence = 'no';
@@ -595,27 +607,27 @@ test('sentence: 连续 3 条 incomplete 受 60s 总上限约束，达到上限�
   assert.equal(jobs1.length, 1);
   const firstAt = Number(jobPayload(jobs1[0]).firstAt);
   assert.ok(firstAt > 0, '等待任务应带 firstAt');
-  assert.ok(Date.parse(jobs1[0].due_at) - firstAt <= 30_500, '首条等待约 30s');
+  assert.ok(Date.parse(jobs1[0].due_at) - firstAt <= 6_500, '首条等待约 6s');
 
   const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '我想说的是' });
   assert.equal(second.reason, 'sentence_wait');
   const jobs2 = pendingJobs(character.id, 'sentence_wait');
   assert.equal(jobs2.length, 1, '新消息应取消旧计时并重排');
   assert.equal(Number(jobPayload(jobs2[0]).firstAt), firstAt, '连续输入沿用第一条的起点');
-  assert.ok(Date.parse(jobs2[0].due_at) <= firstAt + 60_500, '总等待不超过 60s');
+  assert.ok(Date.parse(jobs2[0].due_at) <= firstAt + 6_500, '总等待不超过 6s');
 
   const third = await chat.submitUserMessage({ userId, characterId: character.id, content: '我想说的是那个' });
   assert.equal(third.reason, 'sentence_wait');
   const jobs3 = pendingJobs(character.id, 'sentence_wait');
   assert.equal(jobs3.length, 1);
-  assert.ok(Date.parse(jobs3[0].due_at) <= firstAt + 60_500);
+  assert.ok(Date.parse(jobs3[0].due_at) <= firstAt + 6_500);
 
-  // 模拟这一段已经等满 60s：pending 任务 firstAt 提前到 61s 前
+  // 模拟这一段已经等满 6s：pending 任务 firstAt 提前到 7s 前
   run("UPDATE jobs SET status = 'cancelled' WHERE character_id = ? AND type = 'sentence_wait' AND status = 'pending'", character.id);
   enqueue(
     'sentence_wait',
     new Date(Date.now() + 20_000).toISOString(),
-    { messageId: 'm_dummy', firstAt: Date.now() - 61_000 },
+    { messageId: 'm_dummy', firstAt: Date.now() - 7_000 },
     { userId, characterId: character.id },
   );
   const capped = await chat.submitUserMessage({ userId, characterId: character.id, content: '还没说完' });
@@ -635,7 +647,7 @@ test('chat: 思考模式默认关、触发词与 prefs.thinking 开启', async (
   const normal = await chat.submitUserMessage({ userId, characterId: character.id, content: '今天天气不错' });
   await normal.waitForReply;
   const normalCall = [...fake.state.calls].reverse().find((c) => c.task === 'main');
-  assert.equal(normalCall.thinking, false);
+  assert.equal(normalCall.thinking, undefined, 'thinking=false 时不应向 provider 传 thinking 参数');
 
   const trigger = await chat.submitUserMessage({ userId, characterId: character.id, content: '你再仔细想一想刚才的话' });
   await trigger.waitForReply;
@@ -835,7 +847,8 @@ test('chat: ≥85% 回复后压缩，压缩期间排队并提示，压缩完成�
   const userTokens = context.estimateTextTokens(content);
   const replyTokens = context.estimateTextTokens('我在呢');
   // 让「用户消息」低于 85%、加上回复后越过 85%
-  const limit = Math.ceil((userTokens + replyTokens / 2) / 0.85);
+  const overhead = context.systemOverheadTokens(userId, character.id);
+  const limit = Math.ceil((overhead + userTokens + replyTokens / 2) / 0.85);
   savePrefs(userId, { contextLimits: { [character.id]: limit } });
 
   const first = await chat.submitUserMessage({ userId, characterId: character.id, content });
@@ -870,7 +883,10 @@ test('chat: ≥85% 回复后压缩，压缩期间排队并提示，压缩完成�
 
   // 摘要 + 最近消息的占用应低于压缩前
   const info = chat.getContextInfo(userId, character.id);
-  assert.ok(info.used < userTokens + replyTokens + context.estimateTextTokens('压缩的时候我说话会被排队吧'), '压缩后有效上下文应下降');
+  assert.ok(
+    info.used < overhead + userTokens + replyTokens + context.estimateTextTokens('压缩的时候我说话会被排队吧'),
+    '压缩后有效上下文应下降（含系统提示词开销）',
+  );
   savePrefs(userId, { contextLimits: {} });
 });
 
@@ -905,6 +921,34 @@ test('active: 等待期超时喂「用户未回复」，不追问则安排下一
   const afterSend = active.getWaitState(userId, character.id);
   assert.equal(afterSend.mode, 'waiting', '主动消息发出后重新进入等待期');
   assert.ok(ws.last_agent_at);
+});
+
+test('active: 追问消息的 timesec 控制下一次等待间隔', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider({
+    main: async ({ systemText }) => {
+      if (systemText.includes('超过等待期仍未回复')) {
+        return {
+          text: JSON.stringify({ type: 'message', content: '还在吗', timesec: 120 }),
+          usage: { input: 5, output: 5 },
+          model: 'fake-timeout',
+        };
+      }
+      return undefined;
+    },
+  });
+  chat.setChatProvider(fake.provider);
+  const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '我先去忙了' });
+  await out.waitForReply;
+
+  run('UPDATE wait_states SET deadline = ? WHERE user_id = ? AND character_id = ?', new Date(Date.now() - 1000).toISOString(), userId, character.id);
+  makeDue(character.id, 'active_reply');
+  await scheduler.tick({ sweep: false });
+
+  const ws = active.getWaitState(userId, character.id);
+  assert.equal(ws.mode, 'waiting');
+  const delay = new Date(ws.deadline).getTime() - new Date(ws.last_agent_at).getTime();
+  assert.ok(delay >= 119_000 && delay <= 121_000, `timesec=120 应控制下一次等待，实际 ${delay}ms`);
 });
 
 test('active: 用户发消息取消等待期；POST active-reply 立即生成主动消息', async () => {
@@ -1037,8 +1081,10 @@ test('chat: wakeCharacter 强制 awake、刷新状态并生成 reason=wake 的�
   };
   updateState(character.id, { sleepState: 'sleeping' });
 
+  const userMessagesBefore = get("SELECT COUNT(*) AS c FROM messages WHERE character_id = ? AND role = 'user'", character.id).c;
   const out = await chat.wakeCharacter({ userId, characterId: character.id, text: '醒醒啦', provider });
   assert.equal(out.ok, true);
+  assert.equal(get("SELECT COUNT(*) AS c FROM messages WHERE character_id = ? AND role = 'user'", character.id).c, userMessagesBefore, '叫醒不应插入用户消息');
   assert.equal(out.wakeup, 1);
   assert.equal(out.state.sleepState, 'awake', '返回状态必须是 awake');
   assert.equal(ensureState(character.id, userId).sleep_state, 'awake', '模型刷新又判睡眠也要强制覆盖');
@@ -1093,12 +1139,124 @@ test('chat: system prompt 注入角色对用户的称呼（userAddress 优先，
   updateCharacter(userId, character.id, { settings: { userAddress: '阿盐' } });
   const first = await chat.submitUserMessage({ userId, characterId: character.id, content: '在吗' });
   await first.waitForReply;
-  assert.ok(fake.state.lastSystemText.includes('你对用户的称呼：阿盐'), '应使用 settings.userAddress');
+  assert.ok(fake.state.lastSystemText.includes('阿盐'), '应使用 settings.userAddress');
 
   updateCharacter(userId, character.id, { settings: { userAddress: '' } });
   const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '又来了' });
   await second.waitForReply;
-  assert.ok(fake.state.lastSystemText.includes('你对用户的称呼：u_ai_chat_test'), 'userAddress 为空时回退用户昵称');
+  assert.ok(fake.state.lastSystemText.includes('主人'), 'userAddress 为空时回退“主人”');
+  assert.ok(fake.state.lastSystemText.includes('先理解主人最后一条消息'), '提示词中的称呼应替换为用户称呼');
+});
+
+// ---------------- v1.5.0：运行开关 / 分段 sendsec / 语音情绪 / 亲密度 ----------------
+
+test('chat: 角色停用时发送/叫醒 409，不落库、不调模型、不产生 usage', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  updateCharacter(userId, character.id, { settings: { enabled: false } });
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+  const beforeMessages = get('SELECT COUNT(*) AS c FROM messages WHERE character_id = ?', character.id).c;
+  const beforeUsage = get('SELECT COUNT(*) AS c FROM usage_records WHERE user_id = ?', userId).c;
+
+  const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '在吗' });
+  assert.equal(out.accepted, false);
+  assert.equal(out.reason, 'character_disabled');
+  assert.equal(out.status, 409);
+  assert.equal(get('SELECT COUNT(*) AS c FROM messages WHERE character_id = ?', character.id).c, beforeMessages, '不应落库');
+  assert.equal(get('SELECT COUNT(*) AS c FROM usage_records WHERE user_id = ?', userId).c, beforeUsage, '不应产生 usage');
+  assert.equal(fake.state.calls.length, 0, '不应调用模型');
+
+  const wake = await chat.wakeCharacter({ userId, characterId: character.id, text: '醒醒' });
+  assert.equal(wake.ok, false);
+  assert.equal(wake.reason, 'character_disabled');
+  assert.equal(wake.status, 409);
+
+  // 关闭状态下所有任务执行时跳过
+  const jobId = enqueue('status_refresh', new Date(Date.now() - 1000).toISOString(), {}, { userId, characterId: character.id });
+  const [job] = all('SELECT * FROM jobs WHERE id = ?', jobId);
+  const dispatched = await scheduler.dispatchJob(job);
+  assert.equal(dispatched.status, 'skipped');
+});
+
+test('chat: 分段消息 meta 带 sendsec（1-20 截断），并保留 wait 兼容', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  const fake = fakeProvider({
+    main: async () => ({
+      text: JSON.stringify({
+        type: 'message',
+        content: '第一句。第二句',
+        devide: 2,
+        agent: [{ content: '第一句', wait: 0, sendsec: 2 }, { content: '第二句', wait: 1, sendsec: 99 }],
+      }),
+      usage: { input: 5, output: 5 },
+      model: 'fake',
+    }),
+  });
+  chat.setChatProvider(fake.provider);
+  const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '在吗' });
+  await out.waitForReply;
+  const segments = all("SELECT * FROM messages WHERE character_id = ? AND role = 'agent' ORDER BY created_at ASC", character.id);
+  assert.equal(segments.length, 2);
+  const meta0 = decryptJson(userId, segments[0].meta, {});
+  const meta1 = decryptJson(userId, segments[1].meta, {});
+  assert.equal(meta0.sendsec, 2);
+  assert.equal(meta1.sendsec, 20, 'sendsec 应 clamp 到 1-20');
+  assert.equal(meta1.wait, 1, '旧 wait 仍保留');
+  assert.equal(pendingJobs(character.id, 'segment_send').length, 0, '服务端一次性下发');
+});
+
+test('chat: 语音回复按心情映射 voiceStyle 并写入 meta.tts', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  updateState(character.id, { mood: '开心', psychology: '想聊天', health: '健康' });
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+  const mediaId = makeMedia('voice');
+  const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '', kind: 'voice', mediaId });
+  await out.waitForReply;
+  const agent = lastAgentMessage(character.id);
+  assert.ok(agent.meta.voiceMediaId);
+  assert.equal(agent.meta.tts.voiceStyle, 'happy');
+  assert.ok(agent.meta.tts.speed > 1);
+  assert.ok(fake.state.synthesizeCalls.length >= 1);
+  const opts = fake.state.synthesizeCalls[0].opts;
+  assert.equal(opts.extra.voiceStyle, 'happy');
+  assert.ok(fake.state.lastSystemText.includes('语气：轻快开心'), '提示词应带语气且不要括号旁白');
+});
+
+test('chat: 回复后亲密度 +0.05，累计≥0.1 写 log，10 轮里程碑 +0.5', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  updateState(character.id, { intimacy: 0, chatCount: 0 });
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+
+  const first = await chat.submitUserMessage({ userId, characterId: character.id, content: '第一句' });
+  await first.waitForReply;
+  assert.equal(Number(ensureState(character.id, userId).intimacy), 0.05, '每次回复 +0.05');
+
+  const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '第二句' });
+  await second.waitForReply;
+  assert.equal(Number(ensureState(character.id, userId).intimacy), 0.1);
+  assert.ok(get("SELECT COUNT(*) AS c FROM intimacy_log WHERE character_id = ? AND source = 'chat'", character.id).c >= 1);
+
+  updateState(character.id, { chatCount: 9 });
+  const milestone = await chat.submitUserMessage({ userId, characterId: character.id, content: '第十轮' });
+  await milestone.waitForReply;
+  const value = Number(ensureState(character.id, userId).intimacy);
+  assert.ok(value >= 0.6, `第 10 轮应有里程碑加成，实际 ${value}`);
+  assert.ok(get("SELECT COUNT(*) AS c FROM intimacy_log WHERE character_id = ? AND source = 'milestone'", character.id).c >= 1);
+});
+
+test('chat: 配置声明的 capabilities.image=false 时不调用视觉模型并给出具体提示', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  saveUserApi(userId, { chat: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-test', model: 'my-custom-vl', extra: { capabilities: { image: false } } } });
+  const fake = fakeProvider();
+  chat.setChatProvider(fake.provider);
+  const mediaId = makeMedia('image');
+  const out = await chat.submitUserMessage({ userId, characterId: character.id, content: '看图', kind: 'image', mediaId });
+  const userText = decryptText(userId, get('SELECT * FROM messages WHERE id = ?', out.messageId).content);
+  assert.ok(userText.includes('当前模型不支持图片理解'));
+  assert.equal(fake.state.visionCalls, 0, '显式声明不支持时不应调用视觉模型');
+  saveUserApi(userId, { chat: { extra: { capabilities: { image: true, audio: true } } } });
 });
 
 test('limits: 硬限额拒绝主会话并提示；软限额只影响状态刷新频率', async () => {
@@ -1118,7 +1276,7 @@ test('limits: 硬限额拒绝主会话并提示；软限额只影响状态刷新
   assert.equal(limits.hardLimited, false);
   assert.equal(limits.softLimited, true);
   const scheduled = status.scheduleStatusRefresh({ userId, characterId: character.id });
-  assert.equal(scheduled.delayMs, 4 * 3600_000, '软限额下状态刷新应降为 4 小时');
+  assert.equal(scheduled.delayMs, 30 * 60_000, '自动刷新按角色 statusIntervalSec（缺省兼容 statusIntervalMin=30），不受软限额影响');
   savePrefs(userId, { limits: { hardTokens: 0, softTokens: 0 } });
 });
 
@@ -1209,7 +1367,7 @@ test('scheduler: 周期任务补排 portrait/news_read/creation，且同类型 p
   );
   const types = pending.map((j) => j.type);
   assert.ok(types.includes('portrait'), '满足 200 次对话后应排画像任务');
-  assert.ok(types.includes('news_read'), '应排新闻任务');
+  assert.ok(types.includes('news'), '应排新闻任务');
   assert.ok(types.includes('creation'), '应排创作任务');
 
   // 当天没有日记 → 必须优先排日记
@@ -1252,7 +1410,7 @@ test('scheduler: 周期任务补排 portrait/news_read/creation，且同类型 p
   assert.equal((novelDue.getUTCHours() + 8) % 24, 20, 'daily 小说应排在 UTC+8 20:00');
   assert.equal(novelDue.getUTCMinutes(), 0);
 
-  const news = pending.find((j) => j.type === 'news_read');
+  const news = pending.find((j) => j.type === 'news');
   assert.ok(Date.parse(news.due_at) > Date.now() - 60_000);
 
   // 去重：再次巡检不应重复入队
@@ -1261,7 +1419,7 @@ test('scheduler: 周期任务补排 portrait/news_read/creation，且同类型 p
     "SELECT type FROM jobs WHERE character_id = ? AND status = 'pending'",
     character.id,
   );
-  for (const type of ['portrait', 'news_read', 'creation']) {
+  for (const type of ['portrait', 'news', 'creation']) {
     assert.equal(pendingAgain.filter((j) => j.type === type).length, 1, `${type} 应只有一条 pending`);
   }
 
@@ -1396,11 +1554,12 @@ test('routes: /api/chat 与 /api/characters 双前缀、鉴权、历史/上下�
     const activeBody = await activeRes.json();
     assert.equal(activeBody.ok, true);
 
-    // 唤醒（清醒状态直接 wakeup=1）
+    // 唤醒：先用模型状态置为睡眠，再强制叫醒（过渡提示 + 回复）
+    updateState(character.id, { sleepState: 'sleeping' });
     const wakeRes = await fetch(`${base}/api/chat/${character.id}/wake`, {
       method: 'POST',
       headers: auth,
-      body: JSON.stringify({ text: '醒醒' }),
+      body: JSON.stringify({ text: '醒醒', method: '轻轻摇醒' }),
     });
     assert.equal(wakeRes.status, 200);
     const wakeBody = await wakeRes.json();
@@ -1408,11 +1567,34 @@ test('routes: /api/chat 与 /api/characters 双前缀、鉴权、历史/上下�
     assert.equal(wakeBody.wakeup, 1);
     assert.equal(wakeBody.state.sleepState, 'awake');
     assert.ok(wakeBody.reply, 'wake 应返回一次回复');
+    assert.ok(String(wakeBody.transition).includes('叫醒了'), '应有叫醒过渡提示');
+
+    // 非睡眠状态再次叫醒 → 409（明确错误）
+    const wakeAgain = await fetch(`${base}/api/chat/${character.id}/wake`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ text: '醒醒' }),
+    });
+    assert.equal(wakeAgain.status, 409);
+    const wakeAgainBody = await wakeAgain.json();
+    assert.equal(wakeAgainBody.error.code, 'not_sleeping');
 
     // 越权：别人的角色
     const otherCharacter = createCharacter(otherUserId, { name: '别人家的' });
     const forbidden = await fetch(`${base}/api/characters/${otherCharacter.id}/context`, { headers: auth });
     assert.equal(forbidden.status, 404);
+
+    // 角色停用 → 409，且不落库
+    updateCharacter(userId, character.id, { settings: { enabled: false } });
+    const disabledRes = await fetch(`${base}/api/characters/${character.id}/messages`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ kind: 'text', text: '停用时发消息' }),
+    });
+    assert.equal(disabledRes.status, 409);
+    const disabledBody = await disabledRes.json();
+    assert.equal(disabledBody.error.code, 'character_disabled');
+    updateCharacter(userId, character.id, { settings: { enabled: true } });
 
     // 空消息 400
     const empty = await fetch(`${base}/api/characters/${character.id}/messages`, {

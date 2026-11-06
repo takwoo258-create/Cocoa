@@ -2,7 +2,7 @@
 // 兼容保留：sendMail({to,subject,text,html}) / sendCodeEmail(to, code, purpose)
 // 新增：renderEmail / codeEmailTemplate / shareNoticeTemplate / expiryNoticeTemplate / sendShareNotice / sendExpiryNotice
 import nodemailer from 'nodemailer';
-import { getSmtpConfig } from '../services/settings.js';
+import { getSmtpConfig, getAdminSetting } from '../services/settings.js';
 import env from '../env.js';
 import logger from '../core/logger.js';
 
@@ -55,6 +55,56 @@ function formatTime(value) {
   // 统一按 UTC+8 展示
   const t = new Date(d.getTime() + 8 * 3600_000);
   return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())} ${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}（UTC+8）`;
+}
+
+// v1.5.0：管理端可在 admin_settings.mailTemplates 覆盖标题/正文（占位变量 {{name}} {{shareId}} {{expiresAt}} {{time}} {{reason}}）
+export const MAIL_TEMPLATE_KINDS = ['code', 'share', 'expiry', 'quota', 'ban'];
+
+export function fillPlaceholders(text, vars = {}) {
+  return String(text ?? '').replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (_m, key) =>
+    vars[key] === undefined || vars[key] === null ? '' : String(vars[key]),
+  );
+}
+
+/** 读取某类邮件的覆盖模板（未配置返回 null） */
+export function mailTemplateOverride(kind) {
+  let cfg = {};
+  try {
+    cfg = getAdminSetting('mailTemplates', {}) || {};
+  } catch {
+    return null;
+  }
+  const item = cfg[String(kind || '')];
+  if (!item || typeof item !== 'object') return null;
+  const subject = typeof item.subject === 'string' ? item.subject.trim().slice(0, 200) : '';
+  const body = typeof item.body === 'string' ? item.body.slice(0, 4000) : '';
+  if (!subject && !body) return null;
+  return { subject, body };
+}
+
+/** 用覆盖模板替换标题与正文；未配置则原样返回 */
+export function applyMailOverride(kind, tpl, vars = {}) {
+  const override = mailTemplateOverride(kind);
+  if (!override) return tpl;
+  const subject = override.subject ? fillPlaceholders(override.subject, vars) : tpl.subject;
+  if (!override.body) return { ...tpl, subject, overridden: true };
+  const lines = fillPlaceholders(override.body, vars)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const rendered = renderEmail({
+    title: subject,
+    preheader: lines[0] || subject,
+    paragraphs: lines,
+    notice: '',
+    footerNote: '',
+  });
+  return { ...tpl, subject, html: rendered.html, text: rendered.text, overridden: true };
+}
+
+function nowUtc8() {
+  const t = new Date(Date.now() + 8 * 3600_000).toISOString();
+  return `${t.slice(0, 10)} ${t.slice(11, 19)}`;
 }
 
 /**
@@ -193,7 +243,7 @@ export function codeEmailTemplate({ code = '', purpose = 'register', email = '',
     ['有效期', `${minutes} 分钟`],
   ];
   if (email) meta.push(['接收邮箱', email]);
-  return {
+  const base = {
     subject: `【Cocoa】${label}`,
     ...renderEmail({
       title: label,
@@ -208,6 +258,14 @@ export function codeEmailTemplate({ code = '', purpose = 'register', email = '',
       footerNote: 'Cocoa 不会通过邮件索取密码、API Key 或验证码。',
     }),
   };
+  return applyMailOverride('code', base, {
+    name: email || '',
+    code,
+    shareId: '',
+    expiresAt: `${minutes} 分钟`,
+    time: nowUtc8(),
+    reason: '',
+  });
 }
 
 /** 分享 / 索要通知（direction: share 对方分享给我；request 对方索要我；result 处理结果） */
@@ -262,7 +320,7 @@ export function shareNoticeTemplate(payload = {}) {
     notice = '分享仅授予模型调用权限，对方无法查看你的对话内容。';
   }
 
-  return {
+  const base = {
     subject,
     ...renderEmail({
       title,
@@ -278,36 +336,147 @@ export function shareNoticeTemplate(payload = {}) {
       footerNote: '你可以在「设置 - 模型分享」中随时撤销或查看记录。',
     }),
   };
+  return applyMailOverride('share', base, {
+    name: direction === 'request' ? targetName || ownerName : ownerName || targetName,
+    shareId: targetName || ownerName || '',
+    expiresAt: validity,
+    time: nowUtc8(),
+    reason: note || '',
+  });
 }
 
 /** 分享到期通知 */
 export function expiryNoticeTemplate(payload = {}) {
-  const { ownerName = '', targetName = '', services = [], expiresAt = '', direction = 'share', actionUrl = '' } = payload;
+  const {
+    ownerName = '', targetName = '', services = [], expiresAt = '',
+    direction = 'share', actionUrl = '', upcoming = false, name = '', shareId = '',
+    resourceTitle = '',
+  } = payload;
   const names = serviceNames(services);
-  const serviceText = names.length ? names.join('、') : '对话与嵌入';
+  const serviceText = names.length ? names.join('、') : resourceTitle || '模型授权';
   const endedAt = formatTime(expiresAt) || '刚刚';
   const incoming = direction === 'share';
-  return {
-    subject: '【Cocoa】模型分享已到期',
+  const title = upcoming ? '模型授权即将到期' : '模型分享已到期';
+  const subject = upcoming ? '【Cocoa】模型授权即将到期' : '【Cocoa】模型分享已到期';
+  const base = {
+    subject,
     ...renderEmail({
-      title: '模型分享已到期',
-      preheader: `${serviceText} 的分享已于 ${endedAt} 到期`,
-      paragraphs: [
-        incoming
-          ? `${ownerName || '对方'}（代号 ${targetName || '未知'}）分享给你的模型服务已于 ${endedAt} 到期。`
-          : `你分享给 ${targetName || '对方'}（代号 ${ownerName || '未知'}）的模型服务已于 ${endedAt} 到期。`,
-        '到期后相关服务会自动回退到你自己的配置；未配置时对应功能将暂停，直到重新配置或收到新的分享。',
-      ],
+      title,
+      preheader: upcoming ? `${serviceText} 将于 ${endedAt} 到期` : `${serviceText} 的分享已于 ${endedAt} 到期`,
+      paragraphs: upcoming
+        ? [
+            `${serviceText} 的使用授权将于 ${endedAt} 到期。`,
+            '到期后相关服务会自动回退到你自己的配置；如需继续使用，请前往共享广场重新申请。',
+          ]
+        : [
+            incoming
+              ? `${ownerName || '对方'}（代号 ${targetName || '未知'}）分享给你的模型服务已于 ${endedAt} 到期。`
+              : `你分享给 ${targetName || '对方'}（代号 ${ownerName || '未知'}）的模型服务已于 ${endedAt} 到期。`,
+            '到期后相关服务会自动回退到你自己的配置；未配置时对应功能将暂停，直到重新配置或收到新的分享。',
+          ],
       meta: [
         ['服务', serviceText],
-        ['到期时间', endedAt],
+        [upcoming ? '到期时间' : '到期时间', endedAt],
         ['方向', incoming ? '收到的分享' : '送出的分享'],
+        ...(shareId ? [['Share ID', shareId]] : []),
       ],
       action: actionUrl ? { label: '管理模型分享', url: actionUrl } : null,
-      notice: '如果这是误操作，可以让对方重新分享一次。',
-      footerNote: '此通知在分享到期后自动发送。',
+      notice: upcoming ? '如果已用不到，可以忽略本邮件。' : '如果这是误操作，可以让对方重新分享一次。',
+      footerNote: '此通知在分享到期前后自动发送。',
     }),
   };
+  return applyMailOverride('expiry', base, {
+    name: name || ownerName || targetName || '',
+    shareId: shareId || targetName || ownerName || '',
+    expiresAt: endedAt,
+    time: nowUtc8(),
+    reason: upcoming ? '即将到期' : '已到期',
+  });
+}
+
+/** 广场额度提醒（软限额 / 硬限额） */
+export function quotaNoticeTemplate(payload = {}) {
+  const {
+    name = '',
+    shareId = '',
+    level = 'soft',
+    resourceTitle = '',
+    usedTokens = 0,
+    tokenSoft = 0,
+    tokenHard = 0,
+    expiresAt = '',
+    actionUrl = '',
+  } = payload;
+  const hard = level === 'hard';
+  const title = hard ? '模型使用已达硬限额' : '模型使用接近限额';
+  const subject = hard ? '【Cocoa】模型使用已达硬限额' : '【Cocoa】模型使用接近限额';
+  const fmt = (n) => Number(n || 0).toLocaleString('zh-CN');
+  const base = {
+    subject,
+    ...renderEmail({
+      title,
+      preheader: hard
+        ? `你在「${resourceTitle || '共享广场'}」的模型授权已用尽，相关调用已暂停`
+        : `你在「${resourceTitle || '共享广场'}」的模型授权已接近软限额`,
+      paragraphs: [
+        `你好${name ? `（${name}）` : ''}：你在共享广场使用的「${resourceTitle || '模型授权'}」${
+          hard ? '已达到硬限额，相关模型调用已暂停' : '已达到软限额，建议留意剩余额度'
+        }。`,
+        hard
+          ? '如需继续使用，请联系发布者调整限额，或前往共享广场选择其他资源。'
+          : '达到硬限额后会立即暂停调用，届时对话框上方会显示额度提示。',
+      ],
+      meta: [
+        ['已用 token', fmt(usedTokens)],
+        ...(tokenSoft ? [['软限额', fmt(tokenSoft)]] : []),
+        ...(tokenHard ? [['硬限额', fmt(tokenHard)]] : []),
+        ...(expiresAt ? [['授权到期', formatTime(expiresAt)]] : []),
+      ],
+      action: actionUrl ? { label: '前往共享广场', url: actionUrl } : null,
+      notice: hard ? '本条通知在额度用尽时自动发送。' : '本条通知在达到软限额时发送一次。',
+      footerNote: '额度统计按模型调用的输入/输出 token 累计。',
+    }),
+  };
+  return applyMailOverride('quota', base, {
+    name,
+    shareId,
+    expiresAt: formatTime(expiresAt),
+    time: nowUtc8(),
+    reason: hard ? '已达硬限额' : '已达软限额',
+  });
+}
+
+/** 分享权限被禁用通知（管理员操作） */
+export function banNoticeTemplate(payload = {}) {
+  const { name = '', shareId = '', scope = 'all', reason = '', until = '', actionUrl = '' } = payload;
+  const scopeText = { all: '全部分享权限', server: '本服广场分享权限', global: '全球广场分享权限' }[scope] || '分享权限';
+  const base = {
+    subject: '【Cocoa】分享权限已被禁用',
+    ...renderEmail({
+      title: '分享权限已被禁用',
+      preheader: `管理员已禁用你的${scopeText}`,
+      paragraphs: [
+        `你好${name ? `（${name}）` : ''}：管理员已禁用你的${scopeText}。`,
+        '禁用期间你无法发布新的广场资源，已发布的资源仍可被使用；如有疑问请联系管理员。',
+      ],
+      meta: [
+        ['范围', scopeText],
+        ['原因', reason || '未填写'],
+        ['解除时间', until ? formatTime(until) : '永久'],
+        ...(shareId ? [['Share ID', shareId]] : []),
+      ],
+      action: actionUrl ? { label: '前往共享广场', url: actionUrl } : null,
+      notice: '本条通知由管理员操作触发。',
+      footerNote: '若你认为处理有误，请联系服务器管理员。',
+    }),
+  };
+  return applyMailOverride('ban', base, {
+    name,
+    shareId,
+    expiresAt: until ? formatTime(until) : '永久',
+    time: nowUtc8(),
+    reason: reason || '未填写',
+  });
 }
 
 let cached = null;
@@ -370,6 +539,28 @@ export async function sendExpiryNotice(to, payload = {}) {
     return await sendMail({ to, subject: tpl.subject, text: tpl.text, html: tpl.html });
   } catch (err) {
     logger.error('发送到期通知失败', err.message);
+    return { ok: false, reason: err.message };
+  }
+}
+
+/** 广场额度提醒（应用内 + 邮件） */
+export async function sendQuotaNotice(to, payload = {}) {
+  const tpl = quotaNoticeTemplate(payload);
+  try {
+    return await sendMail({ to, subject: tpl.subject, text: tpl.text, html: tpl.html });
+  } catch (err) {
+    logger.error('发送额度通知失败', err.message);
+    return { ok: false, reason: err.message };
+  }
+}
+
+/** 分享权限禁用通知（应用内 + 邮件） */
+export async function sendBanNotice(to, payload = {}) {
+  const tpl = banNoticeTemplate(payload);
+  try {
+    return await sendMail({ to, subject: tpl.subject, text: tpl.text, html: tpl.html });
+  } catch (err) {
+    logger.error('发送禁用通知失败', err.message);
     return { ok: false, reason: err.message };
   }
 }

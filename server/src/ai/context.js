@@ -6,7 +6,7 @@
 import { all, get, run } from '../db/index.js';
 import { decryptText, decryptJson } from '../core/crypto.js';
 import { nowIso, uuid, clamp } from '../core/util.js';
-import { getPrefs } from '../services/settings.js';
+import { getPrefs, getUserApi } from '../services/settings.js';
 import { resolveModel } from './provider.js';
 import { contextWindowFor } from './models.js';
 import { usageTotals } from './usage.js';
@@ -43,14 +43,52 @@ export function estimateMessagesTokens(messages = []) {
 }
 
 /**
- * 上下文上限优先级（v1.0.1）：
- *   prefs.contextLimits[主模型] > prefs.contextLimits[characterId] > prefs.contextLimits.default > 模型内置窗口
+ * 系统侧固定开销（v1.5.0）：人设 + 状态 + 协议/规则 + 记忆召回预留。
+ * 调试面板的上下文占用必须把提示词算进去，否则会低估占用、过早/过晚压缩。
+ */
+const PROMPT_OVERHEAD_BASE = 620;
+const MEMORY_OVERHEAD_TOKENS = 320;
+
+export function systemOverheadTokens(userId, characterId) {
+  if (!characterId) return PROMPT_OVERHEAD_BASE;
+  const character = get('SELECT * FROM characters WHERE id = ? AND user_id = ?', characterId, userId);
+  if (!character) return PROMPT_OVERHEAD_BASE;
+  const state = get('SELECT * FROM character_state WHERE character_id = ?', characterId);
+  const fields = ['name', 'age', 'race', 'gender', 'personality', 'worldview', 'hobbies', 'appearance', 'occupation', 'relation'];
+  const parts = [];
+  for (const field of fields) {
+    const value = character[field];
+    if (!value) continue;
+    try {
+      parts.push(decryptText(userId, value));
+    } catch {
+      parts.push(String(value));
+    }
+  }
+  if (state) {
+    for (const field of ['motion', 'psychology', 'mood', 'health']) {
+      if (!state[field]) continue;
+      try {
+        parts.push(decryptText(userId, state[field]));
+      } catch {
+        parts.push(String(state[field]));
+      }
+    }
+  }
+  return estimateTextTokens(parts.join(' ')) + PROMPT_OVERHEAD_BASE + MEMORY_OVERHEAD_TOKENS;
+}
+
+/**
+ * 上下文上限优先级（v1.5.0）：
+ *   当前对话配置的 contextWindow > prefs.contextLimits[主模型] > [characterId] > default > 模型内置窗口
  */
 export function contextLimitFor(userId, characterId = null) {
   const prefs = getPrefs(userId);
   const model = resolveModel(userId, 'main');
   const limits = prefs.contextLimits || {};
-  const candidates = [limits[model], characterId ? limits[characterId] : undefined, limits.default];
+  // v1.5.0：当前对话配置自带的上下文窗口优先（“获取模型列表”返回后可直接保存生效）
+  const profileWindow = Number(getUserApi(userId).chat?.contextWindow) || 0;
+  const candidates = [profileWindow, limits[model], characterId ? limits[characterId] : undefined, limits.default];
   for (const raw of candidates) {
     const candidate = Number(raw);
     if (Number.isFinite(candidate) && candidate > 0) return Math.round(candidate);
@@ -176,7 +214,7 @@ export function promptHistory(userId, conversationId, limit = 30) {
   return out;
 }
 
-/** 当前有效上下文占用（摘要 + 未被摘要的消息）；不写库 */
+/** 当前有效上下文占用（提示词开销 + 摘要 + 未被摘要的消息）；不写库 */
 export function conversationTokenUsed(conv) {
   if (!conv) return 0;
   let used = conv.summary ? estimateTextTokens(safeDecrypt(conv.user_id, conv.summary)) : 0;
@@ -186,6 +224,7 @@ export function conversationTokenUsed(conv) {
     if (meta && meta.summarized) continue;
     used += estimateTextTokens(safeDecrypt(conv.user_id, row.content));
   }
+  if (conv.kind === 'main') used += systemOverheadTokens(conv.user_id, conv.character_id);
   return used;
 }
 
@@ -287,6 +326,7 @@ export function listMessages({ userId, characterId, before = null, limit = 50, c
 export default {
   estimateTextTokens,
   estimateMessagesTokens,
+  systemOverheadTokens,
   contextLimitFor,
   ensureMainConversation,
   ensureBackgroundConversation,

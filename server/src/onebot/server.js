@@ -1,6 +1,10 @@
 // OneBot / NapCat 反向 WebSocket 服务端（与 Express 同端口，noServer 模式监听 upgrade）
 import { WebSocketServer } from 'ws';
+import path from 'node:path';
 import { getOnebotConfig } from '../services/settings.js';
+import { get } from '../db/index.js';
+import { decryptJson } from '../core/crypto.js';
+import env from '../env.js';
 import logger from '../core/logger.js';
 import { handleIncomingEvent, recordMessage } from './handler.js';
 
@@ -74,6 +78,27 @@ export function sendAction(action, params = {}, timeoutMs = 10_000) {
   });
 }
 
+/**
+ * QQ 输入状态（NapCat set_input_status）：typing=true → event_type 1，false → 0。
+ * 生成/分段期间保持 true，发送完成或失败后关闭。
+ */
+export async function setInputStatus(qq, typing) {
+  if (!qq) return { ok: false, reason: 'invalid_params' };
+  const numeric = /^\d+$/.test(String(qq)) ? Number(qq) : String(qq);
+  return sendAction('set_input_status', { user_id: numeric, event_type: typing ? 1 : 0 }, 5_000);
+}
+
+/** 发送 NapCat record 段语音；file 可为绝对路径或 base64:// */
+export async function sendPrivateRecord(qq, file) {
+  if (!qq || !file) return { ok: false, reason: 'invalid_params' };
+  const numeric = /^\d+$/.test(String(qq)) ? Number(qq) : String(qq);
+  return sendAction(
+    'send_private_msg',
+    { user_id: numeric, message: [{ type: 'record', data: { file: String(file) } }] },
+    30_000,
+  );
+}
+
 /** 发送私聊消息；无连接时返回 {ok:false, reason:'not_connected'} */
 export function sendPrivate(qq, text) {
   if (!qq || !text) return Promise.resolve({ ok: false, reason: 'invalid_params' });
@@ -115,6 +140,9 @@ export function onebotStatus() {
 async function onEvent(ws, data) {
   stats.events += 1;
   stats.lastEventAt = new Date().toISOString();
+  const isMessage = (data?.post_type || (data?.message !== undefined ? 'message' : '')) === 'message';
+  const qq = String(data?.user_id ?? data?.sender?.user_id ?? '').trim();
+  if (isMessage && qq) void setInputStatus(qq, true);
   let result;
   try {
     result = await handleIncomingEvent(data);
@@ -122,21 +150,99 @@ async function onEvent(ws, data) {
     stats.errors += 1;
     stats.lastError = err?.message || String(err);
     logger.error('OneBot 事件处理异常', err?.stack || err?.message);
+    if (isMessage && qq) void setInputStatus(qq, false);
     return;
   }
-  if (!result?.reply) return;
-  recordMessage({ userId: result.userId || null, qq: result.qq, direction: 'out', content: result.reply });
-  const sent = await sendPrivate(result.qq, result.reply);
-  if (sent.ok) {
-    stats.replies += 1;
-    stats.lastReplyAt = new Date().toISOString();
-  } else if (sent.reason !== 'not_connected') {
+
+  const isGroup = data?.message_type === 'group';
+  try {
+    if (!result?.reply) return;
+    const segments =
+      !isGroup && Array.isArray(result.segments) && result.segments.length
+        ? result.segments.map((seg) => ({
+            content: String(seg?.content || '').trim(),
+            sendsec: Math.min(20, Math.max(1, Math.round(Number(seg?.sendsec) || 1))),
+          })).filter((seg) => seg.content)
+        : [{ content: String(result.reply), sendsec: 0 }];
+
+    // 语音只在最后一段发送（前面段发文本）；群聊只发合并文本
+    let voiceFile = null;
+    if (!isGroup && result.userId && result.characterId) {
+      try {
+        const row = get(
+          "SELECT meta FROM messages WHERE character_id = ? AND user_id = ? AND role = 'agent' ORDER BY created_at DESC LIMIT 1",
+          result.characterId,
+          result.userId,
+        );
+        const meta = row?.meta ? decryptJson(result.userId, row.meta, {}) : {};
+        const voiceId = meta?.voiceMediaId || (meta?.tts ? meta?.mediaId : null);
+        if (voiceId) {
+          const media = get('SELECT * FROM media WHERE id = ?', voiceId);
+          if (media?.path) voiceFile = path.isAbsolute(media.path) ? media.path : path.join(env.mediaDir, media.path);
+        }
+      } catch (err) {
+        logger.warn('OneBot 语音媒体查找失败', err?.message || err);
+      }
+    }
+
+    let waitedMs = 0;
+    let sentCount = 0;
+    let fallbackSent = false;
+    for (let i = 0; i < segments.length; i++) {
+      if (i > 0) {
+        const waitMs = Math.min(8, Math.max(0, Math.round(Number(segments[i - 1].sendsec) || 0))) * 1000;
+        if (waitMs > 0 && waitedMs + waitMs <= 20_000) {
+          waitedMs += waitMs;
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+      }
+      const isLast = i === segments.length - 1;
+      let sent;
+      if (isLast && voiceFile) {
+        sent = await sendPrivateRecord(result.qq, voiceFile);
+        if (!sent.ok) {
+          logger.warn('OneBot 语音发送失败，降级文本', sent.reason);
+          sent = await sendPrivate(result.qq, segments[i].content);
+        }
+      } else {
+        sent = await sendPrivate(result.qq, segments[i].content);
+      }
+      if (!sent.ok && sent.reason === 'not_connected') {
+        sendJson(ws, {
+          action: 'send_private_msg',
+          params: { user_id: result.qq, message: segments[i].content },
+          echo: `cocoa_local_${++echoSeq}`,
+        });
+        sent = { ok: true, local: true };
+      }
+      if (!sent.ok) {
+        logger.warn('OneBot 分段发送失败，降级合并文本', sent.reason);
+        if (!fallbackSent) {
+          fallbackSent = true;
+          await sendPrivate(result.qq, result.reply);
+        }
+        break;
+      }
+      sentCount += 1;
+      recordMessage({ userId: result.userId || null, qq: result.qq, direction: 'out', content: segments[i].content });
+      stats.replies += 1;
+      stats.lastReplyAt = new Date().toISOString();
+    }
+    if (sentCount === 0 && !fallbackSent) {
+      const sent = await sendPrivate(result.qq, result.reply);
+      if (!sent.ok && sent.reason !== 'not_connected') {
+        stats.errors += 1;
+        stats.lastError = sent.reason;
+        logger.warn('OneBot 回复发送失败', sent.reason);
+      }
+    }
+  } catch (err) {
     stats.errors += 1;
-    stats.lastError = sent.reason;
-    logger.warn('OneBot 回复发送失败', sent.reason);
-  } else {
-    // 仅单连接场景下才会走到这里：用当前连接兜底发送
-    sendJson(ws, { action: 'send_private_msg', params: { user_id: result.qq, message: result.reply }, echo: `cocoa_local_${++echoSeq}` });
+    stats.lastError = err?.message || String(err);
+    logger.warn('OneBot 回复发送异常', err?.message || err);
+  } finally {
+    // 全部分段发送完成/失败后关闭输入状态
+    if (isMessage && qq) void setInputStatus(qq, false);
   }
 }
 
@@ -246,4 +352,4 @@ export function detachOnebot() {
   stats.startedAt = null;
 }
 
-export default { attachOnebot, detachOnebot, sendAction, sendPrivate, onebotStatus };
+export default { attachOnebot, detachOnebot, sendAction, sendPrivate, sendPrivateRecord, setInputStatus, onebotStatus };

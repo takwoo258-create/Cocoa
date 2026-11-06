@@ -59,6 +59,13 @@ export function chatRoutes() {
         meta: body.meta && typeof body.meta === 'object' ? body.meta : null,
         source: 'app',
       });
+      if (result.reason === 'character_disabled') {
+        return res.status(409).json({
+          error: { code: 'character_disabled', message: result.notice || '角色已暂停运行，请先在设置中开启' },
+          accepted: false,
+          notice: result.notice || null,
+        });
+      }
       res.status(result.accepted ? 201 : 200).json(publicResult(result));
     }),
   );
@@ -84,6 +91,7 @@ export function chatRoutes() {
         used: info.used,
         limit: info.limit,
         percent: info.percent,
+        ratio: info.ratio,
         compressing: info.compressing,
         threshold: info.threshold,
         summary: info.summary,
@@ -112,19 +120,32 @@ export function chatRoutes() {
     }),
   );
 
-  // 叫醒（模型判断 wakeup 0/1）
+  // 叫醒（v1.5.0：强制叫醒，非睡眠/角色停用时返回 409）
   r.post(
     '/:id/wake',
     asyncHandler(async (req, res) => {
       const character = requireCharacter(req);
       const text = String(req.body?.text ?? req.body?.content ?? '');
-      const result = await wakeCharacter({ userId: req.userId, characterId: character.id, text });
+      const method = String(req.body?.method ?? '用户');
+      const result = await wakeCharacter({ userId: req.userId, characterId: character.id, text, method });
+      if (!result.ok) {
+        const status = result.status || (result.reason === 'character_disabled' || result.reason === 'not_sleeping' ? 409 : 400);
+        return res.status(status).json({
+          error: {
+            code: result.reason || 'wake_failed',
+            message: result.notice || (result.reason === 'not_sleeping' ? '角色现在是清醒的，不需要叫醒哦。' : '暂不能叫醒角色'),
+          },
+          ok: false,
+          state: result.state || null,
+          reason: result.reason || null,
+        });
+      }
       res.json({
-        ok: Boolean(result.ok),
+        ok: true,
         wakeup: result.wakeup ?? 1,
         state: result.state || null,
         reply: result.reply ?? null,
-        reason: result.reason || null,
+        transition: result.transition || null,
         notice: result.notice || null,
         ...(result.error ? { error: result.error } : {}),
       });

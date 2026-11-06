@@ -15,13 +15,17 @@ export const DEFAULT_CHARACTER_SETTINGS = {
   creationTags: [],
   creationFrequency: 'daily', // daily | hourly | off
   sleep: { enabled: true, start: '23:30', end: '07:00', napStart: '13:00', napEnd: '14:30' },
-  statusIntervalMin: 10,
+  // v1.5.0：状态刷新间隔（分钟，5..43200；0 = 永久不自动刷新）；运行开关关闭后暂停一切活动
+  statusIntervalMin: 30,
+  enabled: true,
   activeReply: true,
   qzoneEnabled: false,
   // v1.2.0：角色对用户的称呼（空则用用户昵称）、是否接入 QQ（全账号仅一个角色可为 true）
   userAddress: '',
   qqEnabled: false,
   timezone: 'Asia/Shanghai',
+  // v1.5.0：角色所在世界的天气城市（减少天气接口调用，同一城市 30 分钟内复用）
+  weatherCity: '宣城',
   modelRouting: {},
   searchProvider: 'deepseek',
   diaryHintEnabled: true,
@@ -259,12 +263,21 @@ export function defaultCharacterId(userId) {
   return row?.id || null;
 }
 
-/** 角色日记密码（每日随机 6 位；只存哈希与线索，角色只可暗示） */
+/**
+ * 角色日记密码（每日随机 6 位）
+ * - 对外只返回线索与哈希校验结果；密码原文加密存放在 diary_locks.code，仅供角色上下文使用
+ * - 旧锁没有 code 列内容时保持原样，只给线索，重建密码会让已记住的答案失效
+ */
 export function ensureDiaryLock(characterId, userId) {
   const day = dayKey();
   const existing = get('SELECT * FROM diary_locks WHERE character_id = ? AND day = ?', characterId, day);
   if (existing) {
-    return { day, fresh: false, hint: existing.hint ? decryptText(userId, existing.hint) : '' };
+    return {
+      day,
+      fresh: false,
+      hint: existing.hint ? decryptText(userId, existing.hint) : '',
+      code: readDiaryCode(userId, existing),
+    };
   }
   const code = String(randomInt(100000, 999999));
   const { hash, salt } = hashPassword(code);
@@ -281,15 +294,31 @@ export function ensureDiaryLock(characterId, userId) {
   ];
   const hint = hints[randomInt(0, hints.length - 1)];
   run(
-    'INSERT INTO diary_locks(character_id, day, hash, salt, hint, created_at) VALUES(?,?,?,?,?,?)',
+    'INSERT INTO diary_locks(character_id, day, hash, salt, hint, created_at, code) VALUES(?,?,?,?,?,?,?)',
     characterId,
     day,
     hash,
     salt,
     encryptText(userId, hint),
     nowIso(),
+    encryptText(userId, code),
   );
-  return { day, fresh: true, hint };
+  return { day, fresh: true, hint, code };
+}
+
+function readDiaryCode(userId, row) {
+  if (!row?.code) return '';
+  try {
+    return decryptText(userId, row.code);
+  } catch {
+    return '';
+  }
+}
+
+/** 当日日记密码原文（仅服务端内部/角色上下文使用，绝不返回客户端） */
+export function getDiaryCode(characterId, userId) {
+  const row = get('SELECT * FROM diary_locks WHERE character_id = ? AND day = ?', characterId, dayKey());
+  return readDiaryCode(userId, row);
 }
 
 export function verifyDiaryPassword(characterId, day, password) {

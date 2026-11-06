@@ -21,6 +21,23 @@ class BookService {
         .toList();
   }
 
+  /// v1.5.0：列表 + 顶层 series 分组，可按 seriesId 筛选连载。
+  Future<BookListResult> listPage({
+    required String characterId,
+    required String type,
+    String? seriesId,
+  }) async {
+    final dynamic r = await api.get(
+      '/books',
+      query: <String, dynamic>{
+        'characterId': characterId,
+        'type': type,
+        if (seriesId != null && seriesId.isNotEmpty) 'seriesId': seriesId,
+      },
+    );
+    return BookListResult.fromJson(asMap(r));
+  }
+
   Future<Book> detail(String id, {String? password}) async {
     final dynamic r = await api.get(
       '/books/$id',
@@ -68,6 +85,7 @@ class BookService {
         'password': password,
       },
       silent: true,
+      logoutOn401: false,
     );
     return DiaryUnlockResult.fromJson(asMap(r));
   }

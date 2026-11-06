@@ -3,14 +3,20 @@ import { requireAuth } from '../auth/middleware.js';
 import { asyncHandler, badRequest } from '../core/errors.js';
 import {
   getUserApi, getUserApiRaw, saveUserApi, getPrefs, savePrefs, DEFAULT_PREFS,
-  getSystemModelsPublic, normalizeProvider, PROVIDER_SERVICES,
+  getSystemModelsPublic, normalizeServiceProfile, normalizeProfileStore,
+  getProfileStorePublic, SERVICE_TYPES, SERVICE_LABELS,
 } from '../services/settings.js';
 import { listModels, testConnection, resolveModel } from '../ai/provider.js';
 import { describeModel } from '../ai/models.js';
 
-const SERVICES = ['chat', 'embedding', 'deepseek', 'stt', 'tts'];
-const HIDDEN_SERVICES = ['search'];
 const KEEP = new Set(['****', '••••••••', '[REDACTED]', 'unchanged']);
+const MAX_PROFILES = 20;
+
+function serviceKey(name) {
+  const key = String(name || '').trim();
+  if (key === 'deepseek') return 'search';
+  return SERVICE_TYPES.includes(key) ? key : null;
+}
 
 // 允许前端用未保存的草稿配置直接请求模型列表/连通测试
 function pickOverrides(body) {
@@ -18,20 +24,32 @@ function pickOverrides(body) {
   if (typeof body?.baseUrl === 'string') out.baseUrl = body.baseUrl.trim();
   if (typeof body?.apiKey === 'string' && body.apiKey && !KEEP.has(body.apiKey)) out.apiKey = body.apiKey.trim();
   if (typeof body?.model === 'string') out.model = body.model.trim();
+  if (typeof body?.voice === 'string') out.voice = body.voice.trim();
   return Object.keys(out).length ? out : null;
 }
 
+function profileOverrides(userId, service, profileId) {
+  const key = serviceKey(service);
+  const id = String(profileId || '').trim();
+  if (!key || !id) return null;
+  const store = normalizeProfileStore(getUserApiRaw(userId));
+  const profile = (store[key] || []).find((p) => p.id === id);
+  if (!profile) return null;
+  return { baseUrl: profile.baseUrl, apiKey: profile.apiKey, model: profile.model, voice: profile.voice };
+}
+
+// 旧客户端兼容视图：单服务掩码
 function maskApi(cfg, sharedMeta = {}) {
   const out = {};
-  for (const svc of SERVICES) {
+  for (const svc of SERVICE_TYPES) {
     const c = cfg[svc] || {};
     const shared = sharedMeta[svc] || null;
     out[svc] = {
       baseUrl: c.baseUrl || '',
       model: c.model || '',
       voice: c.voice || '',
+      contextWindow: c.contextWindow || null,
       apiKeySet: Boolean(c.apiKey),
-      // 分享来的配置不暴露任何密钥片段
       apiKeyMasked: shared ? '****' : c.apiKey ? `${c.apiKey.slice(0, 4)}****${c.apiKey.slice(-4)}` : '',
       extra: c.extra || {},
       shared,
@@ -40,11 +58,36 @@ function maskApi(cfg, sharedMeta = {}) {
   return out;
 }
 
-function sanitizePatch(body) {
+function sanitizeProfiles(body, userId) {
+  if (!body?.profiles || typeof body.profiles !== 'object') return null;
+  const store = normalizeProfileStore(getUserApiRaw(userId));
+  const out = {};
+  for (const svc of SERVICE_TYPES) {
+    const list = body.profiles[svc];
+    if (!Array.isArray(list)) continue;
+    if (list.length > MAX_PROFILES) throw badRequest(`每个服务最多 ${MAX_PROFILES} 条配置`, 'too_many_profiles');
+    const prevMap = new Map((store[svc] || []).map((p) => [p.id, p]));
+    out[svc] = list.map((input) => {
+      const id = String(input?.id || '').trim();
+      const prev = prevMap.get(id);
+      const profile = normalizeServiceProfile({ ...(prev || {}), ...input, id });
+      if (typeof input?.apiKey === 'string') {
+        if (KEEP.has(input.apiKey)) profile.apiKey = prev?.apiKey || '';
+        else if (!input.apiKey.trim()) profile.apiKey = '';
+        else profile.apiKey = input.apiKey.trim();
+      }
+      if (!profile.name) profile.name = '未命名配置';
+      return profile;
+    });
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function sanitizeLegacyService(body) {
   const patch = {};
-  for (const svc of SERVICES) {
+  for (const svc of SERVICE_TYPES) {
     const input = body?.[svc];
-    if (!input || typeof input !== 'object') continue;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) continue;
     const next = {};
     if (typeof input.baseUrl === 'string') next.baseUrl = input.baseUrl.trim();
     if (typeof input.model === 'string') next.model = input.model.trim();
@@ -58,125 +101,100 @@ function sanitizePatch(body) {
         next.apiKey = input.apiKey.trim();
       }
     }
+    if (input.contextWindow !== undefined) next.contextWindow = input.contextWindow;
     if (input.extra && typeof input.extra === 'object') next.extra = input.extra;
     patch[svc] = next;
   }
   return patch;
 }
 
-function maskProviders(raw) {
-  const list = Array.isArray(raw?.providers) ? raw.providers : [];
-  return list.map((p) => ({
-    ...normalizeProvider(p, { mask: true }),
-    models: normalizeProvider(p).models,
-    apiKeySet: Boolean(p.apiKey),
-    services: Object.keys(normalizeProvider(p).models),
-  }));
+function sanitizeActive(body) {
+  if (!body?.active || typeof body.active !== 'object') return null;
+  const active = {};
+  for (const svc of SERVICE_TYPES) {
+    if (typeof body.active[svc] === 'string') active[svc] = body.active[svc].trim().slice(0, 64);
+  }
+  return Object.keys(active).length ? active : null;
 }
 
-function sanitizeProviders(body, raw) {
-  if (!Array.isArray(body?.providers)) return null;
-  if (body.providers.length > 8) throw badRequest('最多配置 8 个模型提供源', 'too_many_providers');
-  const existing = new Map((Array.isArray(raw?.providers) ? raw.providers : []).map((p) => [String(p.id), p]));
-  return body.providers.map((input) => {
-    const id = String(input?.id || '').trim();
-    const prev = existing.get(id);
-    const base = normalizeProvider({ ...(prev || {}), ...input, id }, { mask: false });
-    if (typeof input?.apiKey === 'string') {
-      if (KEEP.has(input.apiKey)) base.apiKey = prev?.apiKey || '';
-      else if (!input.apiKey.trim()) base.apiKey = '';
-      else base.apiKey = input.apiKey.trim();
-    }
-    if (!base.models || !Object.keys(base.models).length) throw badRequest('模型提供源至少配置一个服务模型', 'provider_model_required');
-    return base;
-  });
+function configPayload(userId) {
+  const cfg = getUserApi(userId);
+  const profiles = getProfileStorePublic(userId);
+  const shared = cfg.shared || {};
+  const sharedUsed = cfg.sharedUsed || {};
+  return {
+    api: {
+      profiles: profiles.services,
+      active: profiles.active,
+      providerMeta: cfg.providerMeta || {},
+      modelSource: cfg.modelSource || 'own',
+      systemProviderId: cfg.systemProviderId || '',
+      contextWindow: cfg.contextWindow || null,
+      // 兼容旧客户端
+      ...maskApi(cfg, sharedUsed),
+    },
+    systemModels: getSystemModelsPublic(),
+    preferences: getPrefs(userId),
+    ready: {
+      chat: Boolean(cfg.chat.apiKey || cfg.chat.baseUrl),
+      vision: Boolean(cfg.vision?.apiKey || cfg.chat.apiKey),
+      embedding: Boolean(cfg.embedding.apiKey),
+      stt: Boolean(cfg.stt.apiKey),
+      tts: Boolean(cfg.tts.apiKey),
+      search: Boolean(cfg.search.apiKey || cfg.deepseek.apiKey),
+    },
+    shared,
+    sharedUsed,
+    defaults: {
+      preferences: DEFAULT_PREFS,
+      services: SERVICE_TYPES,
+      labels: SERVICE_LABELS,
+    },
+  };
 }
+
 export default function register() {
   const r = Router();
   r.use(requireAuth);
 
   r.get('/', (req, res) => {
-    const cfg = getUserApi(req.userId);
-    const raw = getUserApiRaw(req.userId);
-    const prefs = getPrefs(req.userId);
-    const shared = cfg.shared || {};
-    const sharedUsed = cfg.sharedUsed || {};
-    res.json({
-      api: {
-        ...maskApi(cfg, sharedUsed),
-        providers: maskProviders(raw),
-        modelSource: cfg.modelSource || 'own',
-        systemProviderId: cfg.systemProviderId || '',
-        providerMeta: cfg.providerMeta || {},
-      },
-      systemModels: getSystemModelsPublic(),
-      preferences: prefs,
-      ready: {
-        chat: Boolean(cfg.chat.apiKey),
-        embedding: Boolean(cfg.embedding.apiKey),
-        stt: Boolean(cfg.stt.apiKey),
-        tts: Boolean(cfg.tts.apiKey),
-        search: Boolean(cfg.search.apiKey), // 兼容字段：search/fetch 复用 deepseek，不再暴露配置项
-      },
-      // v1.2.0：他人分享且生效中的服务元信息（不含密钥）
-      shared,
-      defaults: { preferences: DEFAULT_PREFS, services: SERVICES, note: 'search/fetch 复用 DeepSeek 配置，无需单独设置模型' },
-    });
+    res.json(configPayload(req.userId));
   });
 
   r.put(
     '/api',
     asyncHandler(async (req, res) => {
-      const raw = getUserApiRaw(req.userId);
-      const patch = sanitizePatch(req.body || {});
-      const providers = sanitizeProviders(req.body || {}, raw);
-      if (providers) patch.providers = providers;
-      if (req.body?.modelSource === 'system' || req.body?.modelSource === 'own') patch.modelSource = req.body.modelSource;
-      if (typeof req.body?.systemProviderId === 'string') patch.systemProviderId = req.body.systemProviderId.trim().slice(0, 64);
-      if (req.body?.activeProviderId && typeof req.body.activeProviderId === 'object') {
-        const active = {};
-        for (const svc of [...PROVIDER_SERVICES, 'default']) {
-          if (typeof req.body.activeProviderId[svc] === 'string') active[svc] = req.body.activeProviderId[svc].slice(0, 64);
-        }
-        patch.activeProviderId = active;
-      }
+      const body = req.body || {};
+      const patch = sanitizeLegacyService(body);
+      const profiles = sanitizeProfiles(body, req.userId);
+      if (profiles) patch.profiles = profiles;
+      const active = sanitizeActive(body);
+      if (active) patch.active = active;
+      if (body.modelSource === 'system' || body.modelSource === 'own') patch.modelSource = body.modelSource;
+      if (typeof body.systemProviderId === 'string') patch.systemProviderId = body.systemProviderId.trim().slice(0, 64);
       if (!Object.keys(patch).length) throw badRequest('没有可保存的配置项', 'empty_patch');
-      const cfg = saveUserApi(req.userId, patch);
-      const shared = cfg.shared || {};
-      const sharedUsed = cfg.sharedUsed || {};
-      res.json({
-        ok: true,
-        api: {
-          ...maskApi(cfg, sharedUsed),
-          providers: maskProviders(getUserApiRaw(req.userId)),
-          modelSource: cfg.modelSource || 'own',
-          systemProviderId: cfg.systemProviderId || '',
-          providerMeta: cfg.providerMeta || {},
-        },
-        systemModels: getSystemModelsPublic(),
-        ready: { chat: Boolean(cfg.chat.apiKey), embedding: Boolean(cfg.embedding.apiKey) },
-        shared,
-      });
+      saveUserApi(req.userId, patch);
+      res.json({ ok: true, ...configPayload(req.userId) });
     }),
   );
 
   r.post(
     '/models',
     asyncHandler(async (req, res) => {
-      const service = SERVICES.includes(req.body?.service) ? req.body.service : 'chat';
-      const overrides = pickOverrides(req.body);
+      const service = serviceKey(req.body?.service) || 'chat';
+      const overrides = profileOverrides(req.userId, service, req.body?.profileId) || pickOverrides(req.body);
       const result = await listModels(req.userId, service, overrides);
-      res.json(result);
+      res.json({ ...result, service });
     }),
   );
 
   r.post(
     '/test',
     asyncHandler(async (req, res) => {
-      const service = SERVICES.includes(req.body?.service) ? req.body.service : 'chat';
-      const overrides = pickOverrides(req.body);
+      const service = serviceKey(req.body?.service) || 'chat';
+      const overrides = profileOverrides(req.userId, service, req.body?.profileId) || pickOverrides(req.body);
       const result = await testConnection(req.userId, service, overrides);
-      res.status(result.ok ? 200 : 502).json(result);
+      res.status(result.ok ? 200 : 502).json({ ...result, service });
     }),
   );
 
@@ -200,11 +218,13 @@ export default function register() {
       const { lookupContextWindow } = await import('../ai/models.js');
       const desc = describeModel(id);
       const tableCtx = lookupContextWindow(id);
+      const cfg = getUserApi(req.userId);
       res.json({
         model: {
           ...desc,
           contextWindow: tableCtx || desc.contextWindow,
           contextWindowSource: tableCtx ? 'table' : 'default',
+          profileContextWindow: cfg.chat?.contextWindow || null,
           override: getPrefs(req.userId).contextLimits?.[id] || null,
         },
         routed: resolveModel(req.userId, String(req.query.task || 'main')),

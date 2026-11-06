@@ -112,7 +112,19 @@ function sanitizeSettings(input = {}) {
     patch.sleep = sleep;
   }
   if (input.statusIntervalMin !== undefined) {
-    patch.statusIntervalMin = clamp(asInt(input.statusIntervalMin, 10), 1, 240);
+    patch.statusIntervalMin = clamp(asInt(input.statusIntervalMin, 30), 1, 43_200);
+  }
+  if (input.statusIntervalSec !== undefined) {
+    if (input.statusIntervalSec === null || input.statusIntervalSec === 0 || input.statusIntervalSec === '0') {
+      patch.statusIntervalSec = null;
+    } else {
+      const sec = clamp(asInt(input.statusIntervalSec, 600), 300, 86_400 * 30);
+      patch.statusIntervalSec = sec;
+    }
+  }
+  if (input.enabled !== undefined) patch.enabled = Boolean(input.enabled);
+  if (input.weatherCity !== undefined) {
+    patch.weatherCity = String(input.weatherCity ?? '').trim().slice(0, 32) || '宣城';
   }
   if (input.activeReply !== undefined) patch.activeReply = Boolean(input.activeReply);
   if (input.qzoneEnabled !== undefined) patch.qzoneEnabled = Boolean(input.qzoneEnabled);
@@ -515,7 +527,12 @@ export default function register() {
     const character = requireCharacter(req);
     ensureState(character.id, req.userId);
     const fresh = getCharacter(req.userId, character.id, { includeArchived: true });
-    res.json({ characterId: fresh.id, state: fresh.state });
+    // v1.5.0：运行开关随状态一起返回，关闭时前端禁用发送/刷新/叫醒入口
+    res.json({
+      characterId: fresh.id,
+      enabled: fresh.settings?.enabled !== false,
+      state: fresh.state,
+    });
   });
 
   // v1.2.0（API 14.3）：立即刷新角色状态，5 分钟冷却
@@ -533,6 +550,9 @@ export default function register() {
           });
         }
         if (result?.reason === 'character_not_found') throw notFound('角色不存在', 'character_not_found');
+        if (result?.reason === 'character_disabled') {
+          throw new AppError(409, 'character_disabled', '角色已暂停运行，请先在设置中开启');
+        }
         if (result?.reason === 'hard_limit') {
           throw new AppError(400, 'hard_limit', 'Token 已达硬性限额，角色服务已暂停');
         }

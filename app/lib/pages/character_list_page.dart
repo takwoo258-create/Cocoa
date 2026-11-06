@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../core/api_client.dart';
 import '../core/app_state.dart';
@@ -28,6 +30,7 @@ class CharacterListPageState extends State<CharacterListPage> {
   bool _loading = true;
   String? _error;
   String _botQQ = '';
+  String _saying = '';
   bool _botConnected = false;
 
   @override
@@ -60,12 +63,39 @@ class CharacterListPageState extends State<CharacterListPage> {
         }
       }
       await _loadOnebotStatus(state);
+      await _loadSaying();
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadSaying() async {
+    try {
+      final http.Response res = await http
+          .get(Uri.parse('https://uapis.cn/api/v1/saying'))
+          .timeout(const Duration(seconds: 5));
+      if (res.statusCode < 200 || res.statusCode >= 300) return;
+      final dynamic decoded = res.body.isEmpty ? null : jsonDecode(res.body);
+      String text = '';
+      if (decoded is Map) {
+        final dynamic d = decoded['data'];
+        if (d is Map) {
+          text = (d['saying'] ?? d['text'] ?? d['content'] ?? '').toString();
+        } else if (d is String) {
+          text = d;
+        } else {
+          text = (decoded['saying'] ?? decoded['text'] ?? decoded['content'] ?? '')
+              .toString();
+        }
+      }
+      text = text.trim();
+      if (text.isNotEmpty && mounted) setState(() => _saying = text);
+    } catch (_) {
+      // 失败静默
     }
   }
 
@@ -235,7 +265,10 @@ class CharacterListPageState extends State<CharacterListPage> {
     }
     final Widget header = Padding(
       padding: const EdgeInsets.only(bottom: 8, left: 2),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
         children: <Widget>[
           Expanded(
             child: Text(
@@ -270,6 +303,18 @@ class CharacterListPageState extends State<CharacterListPage> {
               ],
             ),
           ),
+        ],
+      ),
+          if (_saying.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                _saying,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
+              ),
+            ),
         ],
       ),
     );

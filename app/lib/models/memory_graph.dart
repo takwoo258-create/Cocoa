@@ -14,6 +14,12 @@ class MemoryNode {
     this.weight = 0,
     this.brightness = 0,
     this.createdAt = '',
+    this.x = 0,
+    this.y = 0,
+    this.z = 0,
+    this.level = 0,
+    this.glow = 0,
+    this.seed = 0,
   });
 
   final String id;
@@ -28,6 +34,14 @@ class MemoryNode {
   final double weight;
   final double brightness;
   final String createdAt;
+
+  /// v1.5.0：后端按图质心居中的稳定 3D 坐标与视觉参数。
+  final double x;
+  final double y;
+  final double z;
+  final int level;
+  final double glow;
+  final int seed;
 
   bool get isAgent => type == 'agent';
   bool get isCategory => type == 'category';
@@ -50,6 +64,12 @@ class MemoryNode {
         weight: asDouble(j['weight']),
         brightness: asDouble(j['brightness']),
         createdAt: asString(j['createdAt']),
+        x: asDouble(j['x']),
+        y: asDouble(j['y']),
+        z: asDouble(j['z']),
+        level: asInt(j['level']),
+        glow: asDouble(j['glow']),
+        seed: asInt(j['seed']),
       );
 }
 

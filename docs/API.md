@@ -399,4 +399,100 @@ broadcast(userId, event)
 管理端 `GET/PUT /api/admin/settings` 新增 `systemModels:{enabled,providers:[...]}`，API Key 只返回 `****`，传 `****` 保持原值。
 
 ### 15.3 更新提示文案
-客户端不使用“强制更新”“最新版本”区分版本，仅展示版本号与「最新版」标签；更新详情中 `+/-/±` 转为“新增/删除/修改”。
+客户端不使用额外措辞区分版本性质，仅展示版本号与「最新版」标签；更新详情中的变更标记统一转为「新增 / 删除 / 修改」。
+
+## 16. v1.5.0 增量
+
+### 16.1 按服务多配置 `GET/PUT /api/config/api`
+
+服务类型：`chat`（对话）、`vision`（视觉）、`tts`（语音合成）、`stt`（语音识别）、`embedding`（嵌入）、`search`（网页搜索）。同一服务可保存多条配置并切换生效。
+
+GET `/api/config` 返回：
+
+```json
+{
+  "api": {
+    "profiles": {
+      "chat": [
+        { "id": "p1", "name": "深度求索", "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat",
+          "voice": "", "contextWindow": 131072, "apiKeySet": true, "apiKeyMasked": "sk-x****abcd",
+          "ready": true, "extra": {} }
+      ],
+      "vision": [], "tts": [], "stt": [], "embedding": [], "search": []
+    },
+    "active": { "chat": "p1", "vision": "", "tts": "", "stt": "", "embedding": "", "search": "" },
+    "providerMeta": { "chat": { "source": "own", "profileId": "p1", "profileName": "深度求索" } },
+    "modelSource": "own",
+    "systemProviderId": "",
+    "contextWindow": 131072
+  },
+  "systemModels": { "enabled": false, "providers": [] },
+  "preferences": {},
+  "ready": { "chat": true, "vision": false, "tts": false, "stt": false, "embedding": false, "search": false },
+  "shared": {},
+  "sharedUsed": {},
+  "defaults": { "services": ["chat", "vision", "tts", "stt", "embedding", "search"], "labels": {} }
+}
+```
+
+PUT `/api/config/api`：
+
+```json
+{
+  "profiles": { "chat": [ { "id": "p1", "name": "", "baseUrl": "", "apiKey": "****", "model": "", "contextWindow": 131072 } ] },
+  "active": { "chat": "p1" },
+  "modelSource": "own",
+  "systemProviderId": ""
+}
+```
+
+- `apiKey` 传 `****` 保持原值，传 `""` 清空，传新值覆盖；任何响应都不返回明文密钥。
+- 数组为全量替换，单服务最多 20 条。
+- `profiles.chat.contextWindow` 保存后立即作为上下文上限生效（优先于 `preferences.contextLimits`）。
+
+### 16.2 模型列表与连通测试
+
+- `POST /api/config/models`：`{ "service": "chat", "profileId": "p1" }`，或传草稿 `{ "service", "baseUrl", "apiKey", "model" }`。返回 `models[]`（含 `contextWindow`、`capabilities`、`modalities`）与 `source`（`remote` / `fallback`）。
+- `POST /api/config/test`：同样入参，返回 `{ ok, latencyMs, detail, service }`；失败时 HTTP 502，body 仍为 JSON。
+
+### 16.3 上下文占用
+
+`GET /api/chat/context` 返回 `used` / `limit` / `percent` / `ratio` / `compressing` / `threshold`。`used` 已包含系统提示词、人设、状态与记忆开销；压缩仅在 `ratio >= 0.85` 时于回复结束后触发。
+
+### 16.4 角色运行开关与天气城市
+
+- `PUT /api/characters/:id/settings` 支持 `enabled`（布尔）：关闭后停止状态刷新、主动回复、记忆、创作、新闻与一切模型调用；聊天接口返回 409 `character_disabled`。
+- 同一接口支持 `statusIntervalMin`（5–43200，0 表示不自动刷新）与 `weatherCity`（默认「宣城」）。
+
+### 16.5 共享广场 `/api/plaza`（需登录，全球公开读除外）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/meta` | 本服广场元信息：`shareId/globalUrl/globalAvailable/globalHost/kinds/visibilities` |
+| GET | `/share-id` · POST `/share-id/rotate` | 8 位 share ID 与轮换（每日 1 次，冷却返回 429） |
+| POST | `/resources` | 发布资源：`{kind:'template'|'model', title, description, visibility:'server'|'global'|'users', targetShareIds, tokenSoft, tokenHard, permanent, startsAt, expiresAt, profile?, services?}` |
+| GET | `/resources` | 列表/搜索：`scope/kind/q/shareId/sort/page/pageSize` |
+| GET/PATCH/DELETE | `/resources/:id` | 详情、修改、删除 |
+| POST | `/resources/:id/like` | 点赞/取消 |
+| POST | `/resources/:id/use` | 使用资源，模板返回 `profile`，模型返回 `providerRef`（不含密钥） |
+| GET | `/mine?box=published|grants|liked` | 我的发布、授权、点赞 |
+| GET | `/grants` · `/grants/:id` | 模型授权与额度 |
+| GET | `/global/list` | 全球公开只读（不可达时 200 + `ok:false`） |
+| POST | `/global/publish` · `/global/:id/use` · `/global/:id/like` | 本服代理写操作，签名由服务端完成 |
+| GET | `/legacy-shares` | 旧模型分享兼容入口 |
+
+资源字段：`id/kind/title/description/visibility/owner{shareId,code,nickname}/tokenSoft/tokenHard/permanent/startsAt/expiresAt/status/likeCount/useCount/liked/mine/visible/preview/grant`；`grant.status` 为 `active|soft_limited|exhausted|expiring|expired|revoked`。
+WS 事件：`plaza_used`、`plaza_quota`、`plaza_expiring`、`plaza_expired`、`plaza_banned`。
+
+### 16.6 人设模板 `/api/templates`
+
+`GET /`、`GET /sources`（可导入角色）、`POST /`、`POST /import {characterId}`（重复 409 `template_duplicate`）、`POST /from-plaza {resourceId}`、`GET/PATCH/DELETE /:id`、`POST /:id/apply`（创建角色）、`POST /:id/publish`（发布到广场）。
+
+### 16.7 统计与管理端
+
+- `GET /api/stats/usage`：`range=today|7d|30d|all`、`model`、`bucket=hour|day|month`、`page/pageSize`。
+- `GET /api/stats/models`：按模型聚合（含 `cost`、`calls`）。
+- `GET /api/stats/overview`：`consumption` 与 `companion` 两组（旧字段保留）。
+- `GET /api/admin/conversations?q=`：按用户 ID/代号/昵称/邮箱搜索，无结果返回空列表。
+- `GET /api/admin/server-status`：新增 `version/onlineConnections/database{size,wal,total}`。
+- 邮件模板：`admin_settings.mailTemplates.{code|share|expiry|quota|ban}.{subject,body}`，占位符 `{{name}} {{shareId}} {{expiresAt}} {{time}} {{reason}}`。

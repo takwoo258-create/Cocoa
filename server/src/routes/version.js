@@ -160,7 +160,7 @@ export function buildUpdateState(releases, current, updateCfg = {}) {
     forceMap.set(latest.version, { force: true, reason: 'admin' });
   }
 
-  // 强制更新起点：最低的、高于当前版本且被标记为必须安装的版本
+  // 需要更新的起点：最低的、高于当前版本且被标记为必须安装的版本
   const forcedSorted = available
     .filter((r) => forceMap.get(r.version)?.force)
     .sort((a, b) => compareVersion(a.version, b.version));

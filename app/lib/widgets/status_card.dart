@@ -161,11 +161,18 @@ class CharacterStatusBar extends StatelessWidget {
         margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
-          gradient: kRoseGradient,
+          gradient: state.resting
+              ? const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: <Color>[Color(0xFF1B2430), Color(0xFF2E2A3E)],
+                )
+              : kRoseGradient,
           borderRadius: BorderRadius.circular(14),
           boxShadow: <BoxShadow>[
             BoxShadow(
-              color: AppColors.rose.withAlpha(40),
+              color: (state.resting ? Colors.black : AppColors.rose)
+                  .withAlpha(40),
               blurRadius: 8,
               offset: const Offset(0, 3),
             ),
@@ -177,10 +184,10 @@ class CharacterStatusBar extends StatelessWidget {
             const SizedBox(width: 6),
             Text(
               characterName,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12.5,
                 fontWeight: FontWeight.w700,
-                color: AppColors.ink,
+                color: state.resting ? Colors.white : AppColors.ink,
               ),
             ),
             const SizedBox(width: 8),
@@ -189,7 +196,10 @@ class CharacterStatusBar extends StatelessWidget {
                 _summary,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: AppColors.ink),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: state.resting ? Colors.white70 : AppColors.ink,
+                ),
               ),
             ),
             if (state.resting)
@@ -205,7 +215,11 @@ class CharacterStatusBar extends StatelessWidget {
                   style: const TextStyle(fontSize: 9, color: AppColors.ink),
                 ),
               ),
-            const Icon(Icons.chevron_right, size: 16, color: AppColors.ink),
+            Icon(
+              Icons.chevron_right,
+              size: 16,
+              color: state.resting ? Colors.white70 : AppColors.ink,
+            ),
           ],
         ),
       ),

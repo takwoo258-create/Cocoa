@@ -13,6 +13,11 @@ class Book {
     this.updatedAt = '',
     this.meta = const <String, dynamic>{},
     this.locked = false,
+    this.seriesId = '',
+    this.sessionId = '',
+    this.words = 0,
+    this.chapter = 0,
+    this.short = false,
   });
 
   final String id;
@@ -25,6 +30,13 @@ class Book {
   final String updatedAt;
   final Map<String, dynamic> meta;
   final bool locked;
+
+  /// v1.5.0：连载 / 会话 / 字数 / 章节 / 短篇标记。
+  final String seriesId;
+  final String sessionId;
+  final int words;
+  final int chapter;
+  final bool short;
 
   bool get isDiary => type == 'diary';
 
@@ -39,6 +51,11 @@ class Book {
         updatedAt: asString(j['updatedAt']),
         meta: asMap(j['meta']),
         locked: asBool(j['locked']),
+        seriesId: asString(j['seriesId']),
+        sessionId: asString(j['sessionId']),
+        words: asInt(j['words']),
+        chapter: asInt(j['chapter']),
+        short: asBool(j['short']),
       );
 
   String get displayDate {
@@ -91,4 +108,38 @@ class DiaryUnlockResult {
       diary: d is Map ? Book.fromJson(asMap(d)) : null,
     );
   }
+}
+
+class BookSeries {
+  const BookSeries({
+    required this.id,
+    this.title = '',
+    this.type = '',
+    this.count = 0,
+    this.latest = '',
+  });
+  final String id;
+  final String title;
+  final String type;
+  final int count;
+  final String latest;
+
+  factory BookSeries.fromJson(Map<String, dynamic> j) => BookSeries(
+        id: asString(j['id']),
+        title: asString(j['title'], asString(j['name'])),
+        type: asString(j['type']),
+        count: asInt(j['count'], asInt(j['chapters'])),
+        latest: asString(j['latest'], asString(j['latestAt'])),
+      );
+}
+
+class BookListResult {
+  const BookListResult({this.books = const <Book>[], this.series = const <BookSeries>[]});
+  final List<Book> books;
+  final List<BookSeries> series;
+
+  factory BookListResult.fromJson(Map<String, dynamic> j) => BookListResult(
+        books: asMapList(j['items']).map(Book.fromJson).toList(),
+        series: asMapList(j['series']).map(BookSeries.fromJson).toList(),
+      );
 }

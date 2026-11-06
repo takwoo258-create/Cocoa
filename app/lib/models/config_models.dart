@@ -1,4 +1,5 @@
 import '../core/constants.dart';
+import 'model_profile.dart';
 import '../core/json_utils.dart';
 
 /// 单个模型服务的配置。apiKey 只回显 apiKeySet / apiKeyMasked。
@@ -80,6 +81,10 @@ class AppConfig {
     this.systemProviderId = '',
     this.providerMeta = const <String, ProviderMeta>{},
     this.activeProviderId = const <String, String>{},
+    this.profiles = const <String, List<ModelProfile>>{},
+    this.active = const <String, String>{},
+    this.serverContextWindow = 0,
+    this.defaults = const <String, dynamic>{},
     this.systemModels = const SystemModels(),
     this.raw = const <String, dynamic>{},
   });
@@ -101,6 +106,10 @@ class AppConfig {
   final String systemProviderId;
   final Map<String, ProviderMeta> providerMeta;
   final Map<String, String> activeProviderId;
+  final Map<String, List<ModelProfile>> profiles;
+  final Map<String, String> active;
+  final int serverContextWindow;
+  final Map<String, dynamic> defaults;
   final SystemModels systemModels;
   final Map<String, dynamic> raw;
 
@@ -157,6 +166,14 @@ class AppConfig {
       systemProviderId: asString(api['systemProviderId']),
       providerMeta: providerMeta,
       activeProviderId: asStringMap(api['activeProviderId']),
+      profiles: asMap(api['profiles']).map((String key, dynamic value) =>
+          MapEntry<String, List<ModelProfile>>(
+            key,
+            asMapList(value).map(ModelProfile.fromJson).toList(),
+          )),
+      active: asStringMap(api['active']),
+      serverContextWindow: asInt(api['contextWindow']),
+      defaults: asMap(j['defaults']),
       systemModels: SystemModels.fromJson(asMap(j['systemModels'])),
       raw: j,
     );
@@ -374,16 +391,22 @@ class ProviderMeta {
     this.source = '',
     this.providerId = '',
     this.providerName = '',
+    this.profileId = '',
+    this.profileName = '',
   });
 
   final String source;
   final String providerId;
   final String providerName;
+  final String profileId;
+  final String profileName;
 
   factory ProviderMeta.fromJson(Map<String, dynamic> j) => ProviderMeta(
         source: asString(j['source']),
         providerId: asString(j['providerId']),
         providerName: asString(j['providerName']),
+        profileId: asString(j['profileId']),
+        profileName: asString(j['profileName']),
       );
 
   String get label {
@@ -391,7 +414,9 @@ class ProviderMeta {
       case 'system':
         return '系统统一模型';
       case 'own':
-        return providerName.isEmpty ? '我的模型' : providerName;
+        return profileName.isNotEmpty
+            ? profileName
+            : (providerName.isEmpty ? '我的模型' : providerName);
       case 'shared':
         return '来自分享';
       default:

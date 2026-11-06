@@ -1,6 +1,9 @@
-// 新闻阅读：微博热搜 + RSS 多源，取前几条热门与几条不温不火，写感想入书架与当日上下文
+// 新闻阅读（v1.5）：微博热搜 + RSS/Atom 多源，抓正文摘要，生成感想入书架与当日上下文
+// - 只读前几条热门 + 随机几条中位条目
+// - 优先使用 RSS 的 content:encoded / description 正文；不足时补抓文章页正文
+// - 软/硬限额跳过；上下文最多保留 3 天
 import { XMLParser } from 'fast-xml-parser';
-import { all, run } from '../db/index.js';
+import { all, get, run } from '../db/index.js';
 import { encryptText, encryptJson, decryptText } from '../core/crypto.js';
 import { nowIso, uuid, dayKey, truncate } from '../core/util.js';
 import logger from '../core/logger.js';
@@ -25,8 +28,13 @@ const WEIBO_ENDPOINTS = [
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
-const NEWS_REFLECT_FALLBACK = `你是角色的扮演者。阅读今天挑出来的几条新闻，以角色口吻写一段 80-150 字的感想，可以联系自己的生活与用户，不要复述新闻全文，不要评论政治敏感细节。
+const NEWS_REFLECT_FALLBACK = `你是角色的扮演者。你刚读完下面这些新闻（含正文摘要），请以角色口吻写一段 120-200 字的感想：
+- 要具体引用你读到的细节或画面，不要只复述标题；
+- 可以联系自己的生活、今天的心情、和用户的关系；
+- 不要评论政治敏感细节，不要长篇大论。
 只输出 JSON：{"content":"感想"}。`;
+
+const MAX_ARTICLE_CHARS = 1600;
 
 function stripHtml(input) {
   return String(input ?? '')
@@ -41,6 +49,30 @@ function stripHtml(input) {
     .replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(Number(d) || 32))
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** 从文章 HTML 中提取可读正文（纯函数，供离线单测） */
+export function extractArticleText(html, { maxChars = MAX_ARTICLE_CHARS } = {}) {
+  const raw = String(html ?? '');
+  if (!raw) return '';
+  const metaDesc =
+    raw.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    raw.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    '';
+  const bodyHtml =
+    raw.match(/<article[^>]*>([\s\S]*?)<\/article>/i)?.[1] ||
+    raw.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1] ||
+    raw;
+  const paragraphs = [];
+  for (const m of bodyHtml.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)) {
+    const text = stripHtml(m[1]);
+    if (text.length >= 8) paragraphs.push(text);
+    if (paragraphs.join('').length > maxChars) break;
+  }
+  let text = paragraphs.join('\n') || stripHtml(bodyHtml);
+  if (text.length < 20) text = stripHtml(metaDesc);
+  text = text.replace(/\n{3,}/g, '\n\n').trim();
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
 function textOf(value) {
@@ -65,11 +97,11 @@ function withTimeout(ms) {
   return AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined;
 }
 
-/** 微博热搜公开接口（失败返回空数组，不抛） */
-export async function fetchWeiboHot({ timeoutMs = 6000, limit = 20 } = {}) {
+/** 微博热搜公开接口（失败返回空数组，不抛）；fetchImpl 便于离线测试注入 */
+export async function fetchWeiboHot({ timeoutMs = 6000, limit = 20, fetchImpl = fetch } = {}) {
   for (const endpoint of WEIBO_ENDPOINTS) {
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetchImpl(endpoint, {
         headers: { 'user-agent': UA, referer: 'https://weibo.com/', accept: 'application/json, text/plain, */*' },
         signal: withTimeout(timeoutMs),
       });
@@ -121,9 +153,11 @@ export function rssItemsFromXml(xml, sourceUrl = '') {
     const summary = stripHtml(
       textOf(entry.description) || textOf(entry.summary) || textOf(entry.content) || textOf(entry['content:encoded']),
     );
+    const full = stripHtml(textOf(entry['content:encoded']) || textOf(entry.content) || summary);
     items.push({
       title,
-      summary: truncate(summary, 200),
+      summary: truncate(summary, 400),
+      excerpt: truncate(full || summary, 600),
       url: linkOf(entry.link) || sourceUrl,
       hot: null,
       source: sourceUrl || 'rss',
@@ -133,7 +167,7 @@ export function rssItemsFromXml(xml, sourceUrl = '') {
 }
 
 /** 拉取多个 RSS 源（失败源跳过） */
-export async function fetchRss(urls = [], { timeoutMs = 8000, perFeed = 8 } = {}) {
+export async function fetchRss(urls = [], { timeoutMs = 8000, perFeed = 8, fetchImpl = fetch } = {}) {
   const feeds = (Array.isArray(urls) ? urls : [urls])
     .map((u) => (typeof u === 'string' ? u : u?.url))
     .map((u) => String(u || '').trim())
@@ -141,7 +175,7 @@ export async function fetchRss(urls = [], { timeoutMs = 8000, perFeed = 8 } = {}
   if (!feeds.length) return [];
   const results = await Promise.allSettled(
     feeds.map(async (url) => {
-      const res = await fetch(url, {
+      const res = await fetchImpl(url, {
         headers: { 'user-agent': UA, accept: 'application/rss+xml, application/xml, text/xml, */*' },
         signal: withTimeout(timeoutMs),
       });
@@ -155,6 +189,34 @@ export async function fetchRss(urls = [], { timeoutMs = 8000, perFeed = 8 } = {}
     if (r.status === 'fulfilled') items.push(...r.value);
     else log.warn('RSS 源抓取失败', r.reason?.message);
   }
+  return items;
+}
+
+/** 正文补抓：摘要过短且是普通网页时，抓文章正文（微博搜索页跳过，避免登录墙垃圾） */
+export async function enrichNewsItems(items = [], { fetchImpl = fetch, maxItems = 3, minSummary = 120, timeoutMs = 5000 } = {}) {
+  const targets = items
+    .filter((it) => it.url && /^https?:\/\//i.test(it.url) && !/weibo\.com/i.test(it.url))
+    .filter((it) => (it.excerpt || it.summary || '').length < minSummary)
+    .slice(0, maxItems);
+  await Promise.all(
+    targets.map(async (it) => {
+      try {
+        const res = await fetchImpl(it.url, {
+          headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml' },
+          signal: withTimeout(timeoutMs),
+        });
+        if (!res.ok) return;
+        const html = await res.text();
+        const text = extractArticleText(html);
+        if (text.length > (it.excerpt || '').length) {
+          it.excerpt = truncate(text, 900);
+          if (!it.summary || it.summary.length < text.length) it.summary = truncate(text, 400);
+        }
+      } catch (err) {
+        log.debug('新闻正文补抓失败', it.url, err?.message);
+      }
+    }),
+  );
   return items;
 }
 
@@ -204,6 +266,16 @@ function reflectText(result) {
   return raw && !raw.startsWith('{') ? raw : '';
 }
 
+/** 每条新闻的上下文块：标题 + 正文摘要（截断） */
+export function newsDigest(items = [], { excerptChars = 260 } = {}) {
+  return items
+    .map((it, i) => {
+      const body = it.excerpt || it.summary || '';
+      return `${i + 1}. ${it.title}${body ? `\n   ${truncate(body, excerptChars)}` : ''}`;
+    })
+    .join('\n');
+}
+
 function insertBook(userId, characterId, { type, title, content, day, meta }) {
   const id = `bk_${uuid().replace(/-/g, '').slice(0, 16)}`;
   const now = nowIso();
@@ -225,35 +297,55 @@ function insertBook(userId, characterId, { type, title, content, day, meta }) {
 }
 
 /**
- * 新闻阅读任务：多源抓取 -> 挑选 -> 生成感想 -> 写 books(type='news') + 当日 system 上下文。
- * 软/硬限额时跳过；LLM 不可用时返回 null。
+ * 新闻阅读任务：多源抓取 -> 正文补抓 -> 挑选 -> 生成感想 -> 写 books + 当日 system 上下文。
+ * 软/硬限额时跳过；角色关闭跳过；LLM 不可用时返回 null。
+ * payload 支持测试注入：{ rssUrls, weibo:false, fetchImpl }
  */
 export async function runNews(job, payload = {}) {
   const ctx = jobContext(job, payload);
-  const { userId, characterId } = ctx;
+  const { userId, characterId, payload: body } = ctx;
   try {
     if (!userId || !characterId) {
       log.warn('新闻任务缺少 userId/characterId，跳过', { userId, characterId });
       return { skipped: true, reason: 'missing_context' };
-    }
-    const limit = limitState(userId);
-    if (limit.state !== 'ok') {
-      log.warn('限额生效，跳过新闻阅读', { userId, characterId, state: limit.state });
-      return { skipped: true, reason: `${limit.state}_limit`, inserted: 0 };
     }
     const character = getCharacter(userId, characterId);
     if (!character) {
       log.warn('新闻任务找不到角色', { userId, characterId });
       return { skipped: true, reason: 'character_not_found' };
     }
+    if (character.settings?.enabled === false) {
+      log.debug('角色已关闭，跳过新闻阅读', { userId, characterId });
+      return { skipped: true, reason: 'character_disabled' };
+    }
+    const limit = limitState(userId);
+    if (limit.state !== 'ok') {
+      log.warn('限额生效，跳过新闻阅读', { userId, characterId, state: limit.state });
+      return { skipped: true, reason: `${limit.state}_limit`, inserted: 0 };
+    }
     const settings = getSettings(characterId, userId);
+    // 幂等保护：同一角色当天只读一次（多个调度源重复排队时不会重复写书架/重复花 token）
+    if (body.force !== true) {
+      const readToday = get(
+        "SELECT id FROM books WHERE user_id = ? AND character_id = ? AND type = 'news' AND day = ? LIMIT 1",
+        userId,
+        characterId,
+        dayKey(),
+      );
+      if (readToday) return { skipped: true, reason: 'already_read_today', bookId: readToday.id };
+    }
+    const fetchImpl = typeof body.fetchImpl === 'function' ? body.fetchImpl : fetch;
+    const rssUrls = [...(Array.isArray(settings.rss) ? settings.rss : []), ...(Array.isArray(body.rssUrls) ? body.rssUrls : [])];
+    const useWeibo = body.weibo !== false;
 
     const [weibo, rss] = await Promise.all([
-      fetchWeiboHot().catch((err) => {
-        log.warn('微博热搜不可用', err?.message);
-        return [];
-      }),
-      fetchRss(settings.rss || []).catch((err) => {
+      useWeibo
+        ? fetchWeiboHot({ fetchImpl }).catch((err) => {
+            log.warn('微博热搜不可用', err?.message);
+            return [];
+          })
+        : [],
+      fetchRss(rssUrls, { fetchImpl }).catch((err) => {
         log.warn('RSS 不可用', err?.message);
         return [];
       }),
@@ -266,20 +358,26 @@ export async function runNews(job, payload = {}) {
     }
 
     const selected = pickItems(allItems, { top: 3, mid: 2 });
-    const sources = [...new Set(selected.all.map((it) => it.source).filter(Boolean))];
-    const digest = selected.all
-      .map((it, i) => `${i + 1}. ${it.title}${it.summary ? `｜${truncate(it.summary, 90)}` : ''}`)
-      .join('\n');
+    await enrichNewsItems(selected.all, { fetchImpl, maxItems: 3 }).catch((err) => {
+      log.warn('新闻正文补抓失败', err?.message);
+    });
 
-    const system = promptText('NEWS_REFLECT', NEWS_REFLECT_FALLBACK, { character, items: selected.all });
+    const sources = [...new Set(selected.all.map((it) => it.source).filter(Boolean))];
+    const digest = newsDigest(selected.all);
+    const withBody = selected.all.filter((it) => (it.excerpt || '').length >= 80).length;
+
+    const system = promptText('NEWS_REFLECT', NEWS_REFLECT_FALLBACK, {
+      character,
+      items: selected.all.map((it) => ({ title: it.title, summary: it.excerpt || it.summary || '' })),
+    });
     const result = await chatText(userId, {
       task: 'news',
       json: true,
       temperature: 0.85,
-      maxTokens: 600,
+      maxTokens: 700,
       messages: [
         { role: 'system', content: system },
-        { role: 'user', content: `今天挑出来阅读的新闻：\n${digest}` },
+        { role: 'user', content: `今天挑出来读的新闻（含正文摘要）：\n${digest}` },
       ],
     });
     recordUsage({ userId, characterId, kind: 'news', model: result.model, usage: result.usage, cost: result.cost });
@@ -301,30 +399,45 @@ export async function runNews(job, payload = {}) {
         source: sources.join(','),
         url: selected.all[0]?.url || '',
         hot: selected.all[0]?.hot || null,
-        items: selected.all.map((it) => ({ title: it.title, url: it.url, hot: it.hot, source: it.source })),
+        withBody,
+        items: selected.all.map((it) => ({
+          title: it.title,
+          url: it.url,
+          hot: it.hot,
+          source: it.source,
+          excerpt: truncate(it.excerpt || it.summary || '', 400),
+        })),
         reflection,
       },
     });
 
-    // 写入当日 system 上下文（最多保留三天）
     appendSystemMessage(userId, characterId, {
       tag: 'news',
       kind: 'news',
       role: 'system',
-      content: `今日浏览（${day}）：\n${digest}\n我的感想：${truncate(reflection, 300)}`,
-      meta: { bookId, day, items: selected.all.length },
+      content: `今日浏览（${day}）：\n${digest}\n我的感想：${truncate(reflection, 400)}`,
+      meta: { bookId, day, items: selected.all.length, withBody },
     });
     cleanupSystemContext(userId, characterId, { days: 3 });
 
-    log.info('新闻阅读完成', { userId, characterId, bookId, count: selected.all.length, sources });
-    return { ok: true, bookId, count: selected.all.length, hot: selected.hot.length, mid: selected.mid.length, sources, day };
+    log.info('新闻阅读完成', { userId, characterId, bookId, count: selected.all.length, withBody, sources });
+    return {
+      ok: true,
+      bookId,
+      count: selected.all.length,
+      hot: selected.hot.length,
+      mid: selected.mid.length,
+      withBody,
+      sources,
+      day,
+    };
   } catch (err) {
     log.warn('新闻阅读失败', err?.message);
     return null;
   }
 }
 
-/** 书架里的新闻记录（解密后的摘要），供创作/画像引用 */
+/** 书架里的新闻记录（解密后的正文摘要），供创作/画像/日记引用 */
 export function todayNewsDigest(userId, characterId, day = dayKey()) {
   const rows = all(
     "SELECT id, title, content FROM books WHERE user_id = ? AND character_id = ? AND type = 'news' AND day = ? ORDER BY created_at DESC LIMIT 3",
@@ -335,7 +448,7 @@ export function todayNewsDigest(userId, characterId, day = dayKey()) {
   return rows.map((r) => ({
     id: r.id,
     title: truncate(safeDecrypt(userId, r.title), 120),
-    content: truncate(safeDecrypt(userId, r.content), 400),
+    content: truncate(safeDecrypt(userId, r.content), 600),
   }));
 }
 
@@ -347,4 +460,4 @@ function safeDecrypt(userId, blob) {
   }
 }
 
-export default { runNews, fetchWeiboHot, fetchRss, rssItemsFromXml, pickItems, todayNewsDigest };
+export default { runNews, fetchWeiboHot, fetchRss, rssItemsFromXml, pickItems, todayNewsDigest, extractArticleText, enrichNewsItems };

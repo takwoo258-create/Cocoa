@@ -25,6 +25,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
   bool _saving = false;
   final TextEditingController _tagCtrl = TextEditingController();
   final TextEditingController _userAddress = TextEditingController();
+  final TextEditingController _weatherCity = TextEditingController();
 
   static const List<String> _freqLabels = <String>['off', 'hourly', 'daily', 'weekly'];
   static const Map<String, String> _freqText = <String, String>{
@@ -39,6 +40,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
     super.initState();
     _settings = widget.character.settings;
     _userAddress.text = _settings.userAddress;
+    _weatherCity.text = _settings.weatherCity;
     _load();
   }
 
@@ -46,6 +48,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
   void dispose() {
     _tagCtrl.dispose();
     _userAddress.dispose();
+    _weatherCity.dispose();
     super.dispose();
   }
 
@@ -58,6 +61,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
         setState(() {
           _settings = s;
           _userAddress.text = s.userAddress;
+          _weatherCity.text = s.weatherCity;
         });
       }
     } catch (_) {
@@ -67,7 +71,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
     }
   }
 
-  Future<void> _save({bool confirmReplace = false}) async {
+  Future<void> _save({bool confirmReplace = false, bool quiet = false}) async {
     final AppState state = AppScope.read(context);
     setState(() => _saving = true);
     try {
@@ -82,6 +86,9 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
           'timezone': _settings.timezone,
           'qzoneEnabled': _settings.qzoneEnabled,
           'userAddress': _userAddress.text.trim(),
+          'weatherCity': _weatherCity.text.trim().isEmpty
+              ? '宣城'
+              : _weatherCity.text.trim(),
           'qqEnabled': _settings.qqEnabled,
           if (confirmReplace) 'confirmReplace': true,
         },
@@ -90,8 +97,11 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
       setState(() {
         _settings = saved;
         _userAddress.text = saved.userAddress;
+        _weatherCity.text = saved.weatherCity;
       });
-      showToast(confirmReplace ? 'QQ 接入角色已更换' : '角色设置已保存');
+      if (!quiet) {
+        showToast(confirmReplace ? 'QQ 接入角色已更换' : '角色设置已保存');
+      }
     } on ApiException catch (e) {
       if (e.code == 'qq_binding_conflict') {
         if (mounted) setState(() => _saving = false);
@@ -103,6 +113,24 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
       showToast('保存失败：$e', isError: true);
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _toggleEnabled(bool value) async {
+    final AppState state = AppScope.read(context);
+    setState(() => _settings = _settings.copyWith(enabled: value));
+    try {
+      final CharacterSettings saved = await state.characterService.saveSettings(
+        widget.character.id,
+        <String, dynamic>{'enabled': value},
+      );
+      if (mounted) setState(() => _settings = saved);
+      showToast(value ? '角色已恢复运行' : '角色已暂停，所有活动与消耗已停止');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _settings = _settings.copyWith(enabled: !value));
+        showToast('保存失败：$e', isError: true);
+      }
     }
   }
 
@@ -217,7 +245,13 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
               style: const TextStyle(fontSize: 12.5, color: AppColors.ink),
             ),
           ),
-          Switch(value: value, onChanged: onChanged),
+          Switch(
+            value: value,
+            onChanged: (bool v) {
+              onChanged(v);
+              _save(quiet: true);
+            },
+          ),
         ],
       ),
     );
@@ -336,11 +370,35 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
                     _settings = _settings.copyWith(qqEnabled: v);
                   });
                 }),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _weatherCity,
+                  decoration: const InputDecoration(
+                    labelText: '天气城市',
+                    hintText: '默认 宣城',
+                    helperText: '用于角色所在世界的天气，仅对本角色生效',
+                  ),
+                ),
                 const Text(
                   '全账号仅一位角色可接入 QQ；若已有其他角色接入，保存时会询问是否更换接入对象。',
                   style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
                 ),
               ],
+            ),
+          ),
+          SectionCard(
+            title: '运行状态',
+            child: SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('角色运行', style: TextStyle(fontSize: 13)),
+              subtitle: Text(
+                _settings.enabled
+                    ? '运行中：聊天、状态刷新、主动回复与创作按设置进行'
+                    : '已暂停：停止所有活动与 token 消耗；聊天页将显示暂停提示',
+                style: const TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+              ),
+              value: _settings.enabled,
+              onChanged: _toggleEnabled,
             ),
           ),
           SectionCard(
@@ -456,6 +514,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
                         setState(() {
                           _settings = _settings.copyWith(statusIntervalMin: v);
                         });
+                        _save(quiet: true);
                       },
                     ),
                   ],

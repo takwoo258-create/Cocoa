@@ -61,32 +61,43 @@ test('统一模型：用户可用系统提供源，密钥不泄露', async () =>
   assert.equal(effective.providerMeta.chat.source, 'system');
 });
 
-test('多提供源：用户自建两个源并按服务选择', async () => {
+test('多配置：同一服务可保存多条配置并切换生效', async () => {
   const saved = await api('/api/config/api', {
     method: 'PUT',
     body: {
       modelSource: 'own',
-      providers: [
-        { id: 'p1', name: '源一', baseUrl: 'https://a.example/v1', apiKey: 'sk-one', models: { chat: 'model-a' } },
-        { id: 'p2', name: '源二', baseUrl: 'https://b.example/v1', apiKey: 'sk-two', models: { chat: 'model-b', embedding: 'embed-b' } },
-      ],
-      activeProviderId: { chat: 'p2', embedding: 'p2' },
+      profiles: {
+        chat: [
+          { id: 'p1', name: '源一', baseUrl: 'https://a.example/v1', apiKey: 'sk-one', model: 'model-a', contextWindow: 64000 },
+          { id: 'p2', name: '源二', baseUrl: 'https://b.example/v1', apiKey: 'sk-two', model: 'model-b', contextWindow: 128000 },
+        ],
+        embedding: [
+          { id: 'e1', name: '嵌入', baseUrl: 'https://b.example/v1', apiKey: 'sk-two', model: 'embed-b' },
+        ],
+      },
+      active: { chat: 'p2' },
     },
   });
   assert.equal(saved.status, 200, JSON.stringify(saved.json));
-  assert.equal(saved.json.api.providers.length, 2);
-  assert.equal(saved.json.api.providers[0].apiKey, '****');
+  assert.equal(saved.json.api.profiles.chat.length, 2);
+  assert.equal(saved.json.api.active.chat, 'p2');
+  assert.match(saved.json.api.profiles.chat[1].apiKeyMasked, /\*\*\*\*/);
   assert.doesNotMatch(JSON.stringify(saved.json), /sk-one|sk-two/);
   const effective = getUserApi('u_sys');
   assert.equal(effective.chat.model, 'model-b');
-  assert.equal(effective.providerMeta.chat.providerId, 'p2');
+  assert.equal(effective.chat.contextWindow, 128000);
+  assert.equal(effective.providerMeta.chat.profileId, 'p2');
   assert.equal(effective.embedding.model, 'embed-b');
 
   // 再次保存时传 **** 保持旧 key
-  const keep = await api('/api/config/api', { method: 'PUT', body: { providers: saved.json.api.providers.map((p) => ({ ...p, apiKey: '****' })) } });
-  assert.equal(keep.status, 200);
+  const keep = await api('/api/config/api', {
+    method: 'PUT',
+    body: { profiles: { chat: saved.json.api.profiles.chat.map((p) => ({ ...p, apiKey: '****' })) } },
+  });
+  assert.equal(keep.status, 200, JSON.stringify(keep.json));
   const again = getUserApi('u_sys');
   assert.equal(again.chat.apiKey, 'sk-two');
+  assert.equal(again.chat.model, 'model-b');
 });
 
 test('管理端可读写系统模型配置并掩码', async () => {

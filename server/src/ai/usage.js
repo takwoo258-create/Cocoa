@@ -1,13 +1,35 @@
 // Token 用量与消费计量（普通用户/管理员统计的数据源）
 import { all, get, run } from '../db/index.js';
 import { nowIso, uuid } from '../core/util.js';
-import { estimateCost } from './models.js';
+import { estimateCost as baseEstimateCost } from './models.js';
+import { consumeGrantTokens } from '../services/plaza.js';
+
+// v1.5.0：未知模型按 0.6 元/百万 token 兜底，避免统计页消费恒为 0
+export const UNKNOWN_MODEL_PRICE_PER_MILLION = 0.6;
+
+/**
+ * 费用估算（人民币）：已知模型走内置价格表，未知模型按 0.6 元/百万 token 兜底。
+ * @param {string} model 模型名
+ * @param {number} promptTokens 输入 token（含缓存命中）
+ * @param {number} completionTokens 输出 token
+ * @param {number} cachedTokens 输入中命中的缓存 token
+ */
+export function estimateCost(model, promptTokens = 0, completionTokens = 0, cachedTokens = 0) {
+  const prompt = Math.max(0, Number(promptTokens) || 0);
+  const completion = Math.max(0, Number(completionTokens) || 0);
+  const cached = Math.max(0, Math.min(prompt, Number(cachedTokens) || 0));
+  const known = baseEstimateCost(model, prompt, cached, completion);
+  if (known > 0) return known;
+  const total = prompt + completion;
+  if (!total) return 0;
+  return (total * UNKNOWN_MODEL_PRICE_PER_MILLION) / 1_000_000;
+}
 
 export function recordUsage({ userId, characterId = null, kind = 'main', model, usage = {}, cost = null }) {
   const input = Number(usage.input || usage.prompt_tokens || 0);
   const output = Number(usage.output || usage.completion_tokens || 0);
   const cached = Number(usage.cached || 0);
-  const amount = cost == null ? estimateCost(model, input, cached, output) : cost;
+  const amount = cost == null ? estimateCost(model, input, output, cached) : cost;
   run(
     'INSERT INTO usage_records(id, user_id, character_id, kind, model, input_tokens, cached_tokens, output_tokens, cost, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
     uuid(),
@@ -21,6 +43,12 @@ export function recordUsage({ userId, characterId = null, kind = 'main', model, 
     amount,
     nowIso(),
   );
+  // v1.5.0：广场模型授权的 token 限额回写（失败不影响主流程）
+  try {
+    consumeGrantTokens(userId, { model: model || 'unknown', tokens: input + output });
+  } catch {
+    /* 广场额度统计失败不影响用量记录 */
+  }
   return { input, output, cached, cost: amount };
 }
 

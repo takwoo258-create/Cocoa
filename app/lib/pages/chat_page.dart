@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart' as rec;
 
 import '../core/app_state.dart';
+import '../core/appearance.dart';
 import '../core/constants.dart';
 import '../core/global.dart';
 import '../core/json_utils.dart';
@@ -45,6 +46,7 @@ class _ChatPageState extends State<ChatPage> {
   bool _sending = false;
   bool _typing = false;
   String? _typingStage;
+  bool _enabled = true;
   bool _recording = false;
   bool _connected = false;
   DateTime? _recordStartedAt;
@@ -61,6 +63,7 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     _state = widget.character.state;
+    _enabled = widget.character.settings.enabled;
     WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
   }
 
@@ -554,6 +557,7 @@ class _ChatPageState extends State<ChatPage> {
       setState(() {
         if (result.state != null) _state = result.state!;
       });
+      _appendNotice('${widget.character.name}被叫醒了');
       if (result.reply.trim().isNotEmpty) {
         _appendMessage(ChatMessage(
           id: 'wake_${DateTime.now().microsecondsSinceEpoch}',
@@ -567,6 +571,30 @@ class _ChatPageState extends State<ChatPage> {
     } catch (e) {
       showToast('叫醒失败：$e', isError: true);
     }
+  }
+
+  Widget _pausedBar() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.warn.withAlpha(22),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.warn.withAlpha(80)),
+      ),
+      child: const Row(
+        children: <Widget>[
+          Icon(Icons.pause_circle_outline, size: 16, color: AppColors.warn),
+          SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '角色已暂停：停止所有活动与 token 消耗；可在角色设置中恢复运行。',
+              style: TextStyle(fontSize: 11, color: AppColors.warn, height: 1.4),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _sleepBar() {
@@ -589,7 +617,7 @@ class _ChatPageState extends State<ChatPage> {
             ),
           ),
           TextButton(
-            onPressed: _wakeUp,
+            onPressed: _enabled ? _wakeUp : null,
             style: TextButton.styleFrom(
               minimumSize: const Size(0, 30),
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -604,7 +632,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Widget _inputBar() {
     final AppState state = AppScope.of(context);
-    final bool disabled = _state.resting;
+    final bool disabled = _state.resting || !_enabled;
     return Container(
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
       decoration: BoxDecoration(
@@ -632,9 +660,11 @@ class _ChatPageState extends State<ChatPage> {
                   textInputAction: TextInputAction.newline,
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: disabled
-                        ? '${widget.character.name}在休息，暂时不能发送消息'
-                        : '说点什么…',
+                    hintText: !_enabled
+                        ? '${widget.character.name}已暂停活动，暂时不能发送消息'
+                        : (disabled
+                            ? '${widget.character.name}在休息，暂时不能发送消息'
+                            : '说点什么…'),
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 12,
                       vertical: 10,
@@ -792,11 +822,22 @@ class _ChatPageState extends State<ChatPage> {
                       CharacterSettingsPage(character: widget.character),
                 ),
               );
+              if (!mounted) return;
+              final AppState state = AppScope.read(context);
+              try {
+                final CharacterSettings latest =
+                    await state.characterService.getSettings(
+                  widget.character.id,
+                );
+                if (mounted) setState(() => _enabled = latest.enabled);
+              } catch (_) {}
             },
           ),
         ],
       ),
-      body: ContentFrame(
+      body: Container(
+        decoration: appearanceDecoration(state, chat: true),
+        child: ContentFrame(
         maxWidth: 900,
         child: Column(
           children: <Widget>[
@@ -805,10 +846,12 @@ class _ChatPageState extends State<ChatPage> {
               state: _state,
               onTap: _openStatusPage,
             ),
-            if (_state.resting) _sleepBar(),
+            if (!_enabled) _pausedBar(),
+            if (_enabled && _state.resting) _sleepBar(),
             Expanded(child: _messageList()),
             _inputBar(),
           ],
+        ),
         ),
       ),
     );

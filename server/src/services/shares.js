@@ -25,6 +25,8 @@ const DURATION_KEYS = ['years', 'months', 'weeks', 'days', 'hours', 'minutes'];
 const DURATION_UNITS = { years: '年', months: '个月', weeks: '周', days: '天', hours: '小时', minutes: '分钟' };
 const EXPIRES_AT_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const WATCH_INTERVAL_MS = 60_000;
+// v1.5.0：广场授权的镜像行不进入「模型分享」列表（由共享广场管理）
+const PLAZA_FILTER = " AND (note IS NULL OR note NOT LIKE 'plaza:%')";
 
 // ---------------- 工具 ----------------
 
@@ -165,6 +167,7 @@ export function toShare(row, viewerId) {
     respondedAt: row.responded_at || null,
     revokedAt: row.revoked_at || null,
     seen: Boolean(row.seen),
+    source: String(row.note || '').startsWith('plaza:') ? 'plaza' : 'share',
     canRespond: isParty && status === 'pending' && row.target_id === viewerId,
     canRevoke: isParty && (status === 'pending' || status === 'accepted'),
     effective: status === 'accepted',
@@ -461,25 +464,25 @@ export function listShares(actorId, box = 'incoming') {
   let rows;
   switch (box) {
     case 'outgoing':
-      rows = all("SELECT * FROM model_shares WHERE owner_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 200", actorId);
+      rows = all("SELECT * FROM model_shares WHERE owner_id = ? AND status = 'pending'" + PLAZA_FILTER + " ORDER BY created_at DESC LIMIT 200", actorId);
       break;
     case 'active':
       rows = all(
-        "SELECT * FROM model_shares WHERE (owner_id = ? OR target_id = ?) AND status IN ('accepted','active') ORDER BY created_at DESC LIMIT 200",
+        "SELECT * FROM model_shares WHERE (owner_id = ? OR target_id = ?) AND status IN ('accepted','active')" + PLAZA_FILTER + " ORDER BY created_at DESC LIMIT 200",
         actorId,
         actorId,
       );
       break;
     case 'history':
       rows = all(
-        "SELECT * FROM model_shares WHERE (owner_id = ? OR target_id = ?) AND status <> 'pending' ORDER BY created_at DESC LIMIT 200",
+        "SELECT * FROM model_shares WHERE (owner_id = ? OR target_id = ?) AND status <> 'pending'" + PLAZA_FILTER + " ORDER BY created_at DESC LIMIT 200",
         actorId,
         actorId,
       );
       break;
     case 'incoming':
     default:
-      rows = all("SELECT * FROM model_shares WHERE target_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 200", actorId);
+      rows = all("SELECT * FROM model_shares WHERE target_id = ? AND status = 'pending'" + PLAZA_FILTER + " ORDER BY created_at DESC LIMIT 200", actorId);
       break;
   }
   const items = rows.map((row) => toShare(row, actorId));
@@ -489,7 +492,7 @@ export function listShares(actorId, box = 'incoming') {
 /** 客户端启动弹窗：待我处理（并标记已查看） */
 export function listPendingShares(actorId) {
   const rows = all(
-    "SELECT * FROM model_shares WHERE target_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 50",
+    "SELECT * FROM model_shares WHERE target_id = ? AND status = 'pending'" + PLAZA_FILTER + " ORDER BY created_at DESC LIMIT 50",
     actorId,
   );
   if (rows.length) {
@@ -502,7 +505,7 @@ export function listPendingShares(actorId) {
 /** 供 OneBot 使用：待处理分享（不标记 seen） */
 export function latestPendingShare(userId) {
   const row = get(
-    "SELECT * FROM model_shares WHERE target_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+    "SELECT * FROM model_shares WHERE target_id = ? AND status = 'pending' AND (note IS NULL OR note NOT LIKE 'plaza:%') ORDER BY created_at DESC LIMIT 1",
     userId,
   );
   return row ? toShare(row, userId) : null;
@@ -511,8 +514,9 @@ export function latestPendingShare(userId) {
 /** 把到期（accepted/active 且 expires_at <= now）的分享标记为 expired，并通知双方 */
 export function expireDueShares(now = new Date()) {
   const iso = new Date(now).toISOString();
+  // 广场授权镜像行（note = plaza:<资源 id>）由广场巡检负责，这里跳过避免重复通知
   const rows = all(
-    "SELECT * FROM model_shares WHERE status IN ('accepted','active') AND expires_at IS NOT NULL AND expires_at <= ?",
+    "SELECT * FROM model_shares WHERE status IN ('accepted','active') AND expires_at IS NOT NULL AND expires_at <= ? AND (note IS NULL OR note NOT LIKE 'plaza:%')",
     iso,
   );
   let count = 0;

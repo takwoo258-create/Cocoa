@@ -15,14 +15,14 @@ import { get, run, getMeta } from '../db/index.js';
 import env from '../env.js';
 import logger from '../core/logger.js';
 import { badRequest, notFound } from '../core/errors.js';
-import { nowIso, uuid, clamp, sleep } from '../core/util.js';
+import { nowIso, uuid, clamp, sleep, dayKey, dayRangeStart } from '../core/util.js';
 import { encryptText, decryptText, encryptJson, decryptJson } from '../core/crypto.js';
 import { broadcast } from '../realtime/hub.js';
 import { getCharacter, getSettings, ensureState, updateState, defaultCharacterId } from '../services/characters.js';
 import { getPrefs, getUserApi } from '../services/settings.js';
 import { enqueue, cancelJobs, nextJob, jobPayload } from '../services/jobs.js';
 import { recordUsage } from './usage.js';
-import { parseReply, clampSendSec } from './reply.js';
+import { parseReply, clampSendSec, typingSecondsFor } from './reply.js';
 import { checkSentenceComplete, needsSentenceCheck, sentenceWaitDueMs } from './sentence.js';
 import {
   ensureMainConversation,
@@ -39,9 +39,11 @@ import {
   COMPRESS_THRESHOLD,
 } from './context.js';
 import { compressConversation } from './compress.js';
-import { effectiveSleep, sleepNotice, refreshStatus } from './status.js';
-import { markAgentSent, markUserReplied, judgeWakeup } from './active.js';
+import { effectiveSleep, sleepNotice, refreshStatus, cachedWeatherPrompt } from './status.js';
+import { markAgentSent, markUserReplied, judgeWakeup, timesecToDelayMs } from './active.js';
+import { isCharacterActive, isCharacterIdActive, disabledNotice } from './activity.js';
 import * as defaultProvider from './provider.js';
+import { describeModel } from './models.js';
 
 // ---------------- 可注入 provider（单测离线用） ----------------
 
@@ -190,6 +192,53 @@ function withLock(s, fn) {
   return run;
 }
 
+function capabilityInfo(userId, kind) {
+  try {
+    const cfg = getUserApi(userId);
+    if (kind === 'image') {
+      const model = defaultProvider.resolveModel(userId, 'vision');
+      // 自定义模型名：优先使用配置里显式声明的 capabilities（profiles.extra.capabilities）
+      const declared = cfg.chat?.extra?.capabilities || cfg.chat?.capabilities;
+      const supported = declared && declared.image !== undefined
+        ? Boolean(declared.image)
+        : Boolean(describeModel(model).capabilities.image);
+      return { supported, model };
+    }
+    if (kind === 'voice') {
+      const model = cfg?.stt?.model || 'mimo-audio';
+      const declared = cfg.stt?.extra?.capabilities || cfg.stt?.capabilities;
+      const cap = describeModel(model).capabilities;
+      const supported = declared && declared.audio !== undefined
+        ? Boolean(declared.audio)
+        : Boolean(cap.audioIn || cap.audio);
+      return { supported, model };
+    }
+  } catch {
+    /* 配置缺失时按支持处理，交给 provider 报错并降级 */
+  }
+  return { supported: true, model: '' };
+}
+
+function modalitySupported(userId, kind) {
+  return capabilityInfo(userId, kind).supported;
+}
+
+// ---------------- 语音情绪（v1.5.0） ----------------
+
+/** 依据状态/心情/健康映射 TTS 语气参数 */
+export function voiceStyleFor(state = {}, sleepState = 'awake') {
+  const mood = String(state.mood || '');
+  const psych = String(state.psychology || '');
+  const health = String(state.health || '');
+  if (sleepState !== 'awake' || /迷糊|没睡醒|困|刚醒/.test(psych)) {
+    return { voiceStyle: 'whisper', speed: 0.9, pitch: 0.98, tone: '刚睡醒、轻声迷糊' };
+  }
+  if (/开心|高兴|兴奋|愉快|雀跃/.test(mood)) return { voiceStyle: 'happy', speed: 1.08, pitch: 1.03, tone: '轻快开心' };
+  if (/低落|难过|失落|烦闷|委屈|伤心/.test(mood)) return { voiceStyle: 'sad', speed: 0.92, pitch: 0.97, tone: '低落柔软' };
+  if (/病|虚弱|疲|累|发烧|不适/.test(health)) return { voiceStyle: 'tired', speed: 0.88, pitch: 0.95, tone: '有点疲惫' };
+  return { voiceStyle: 'soft', speed: 0.96, pitch: 1.0, tone: '自然柔和' };
+}
+
 // ---------------- 多模态预处理 ----------------
 
 function mediaRow(userId, characterId, mediaId) {
@@ -258,6 +307,11 @@ export async function preprocessMedia({ userId, characterId, kind = 'text', medi
 
   for (const row of rows) {
     if (row.kind === 'voice') {
+      if (!modalitySupported(userId, 'voice')) {
+        parts.push('〔当前语音模型不支持语音转写，已按文字占位处理〕');
+        notices.push(`当前语音模型 ${capabilityInfo(userId, 'voice').model} 不支持语音识别，请更换语音模型或发送文字喵~`);
+        continue;
+      }
       const file = resolveMediaPath(row);
       if (!file) {
         parts.push('〔语音消息，文件缺失，按文字占位处理〕');
@@ -282,6 +336,11 @@ export async function preprocessMedia({ userId, characterId, kind = 'text', medi
       continue;
     }
     if (row.kind === 'image') {
+      if (!modalitySupported(userId, 'image')) {
+        parts.push('〔当前模型不支持图片理解，已忽略图片内容〕');
+        notices.push(`当前图片模型 ${capabilityInfo(userId, 'image').model} 不支持图片理解，请更换支持多模态的模型或改用文字~`);
+        continue;
+      }
       try {
         const dataUrl = mediaDataUrl(row);
         if (!dataUrl) throw new Error('图片文件缺失');
@@ -357,15 +416,23 @@ function saveVoiceMedia({ userId, characterId, buffer, mime }) {
 }
 
 /** 用户以语音发送时，用 Breeze TTS 合成回复语音；失败只记日志，不影响文字回复 */
-async function maybeSynthesize({ userId, characterId, text }) {
+async function maybeSynthesize({ userId, characterId, text, voiceStyle = 'soft', speed = 1, pitch = 1 }) {
   const prov = getChatProvider();
   if (typeof prov.synthesize !== 'function') return null;
   const content = String(text || '').trim();
   if (!content) return null;
   try {
-    const out = await prov.synthesize(userId, content);
+    let out;
+    try {
+      out = await prov.synthesize(userId, content, { extra: { voiceStyle, speed, pitch } });
+    } catch (err) {
+      // 不支持风格参数的提供方：降级为默认音色再试一次
+      logger.warn('TTS 风格参数不被支持，降级默认', err?.message || err);
+      out = await prov.synthesize(userId, content);
+    }
     if (!out?.buffer || !Buffer.isBuffer(out.buffer)) return null;
-    return saveVoiceMedia({ userId, characterId, buffer: out.buffer, mime: out.mime });
+    const media = saveVoiceMedia({ userId, characterId, buffer: out.buffer, mime: out.mime });
+    return { ...media, ...(out.provider ? { provider: out.provider } : {}) };
   } catch (err) {
     logger.warn('TTS 合成失败，仅发送文字回复', err?.message || err);
     return null;
@@ -391,7 +458,7 @@ function detectVoiceReply(userId, conversationId) {
 
 // ---------------- 提示词 ----------------
 
-export function buildSystemPrompt({ character, state, summary = '', memory = '', thinking = false, segmentEnabled = true, sleepState = 'awake', userAddress = '' } = {}) {
+export function buildSystemPrompt({ character, state, summary = '', memory = '', thinking = false, segmentEnabled = true, sleepState = 'awake', userAddress = '主人', world = '', voiceTone = '' } = {}) {
   const time = new Date(Date.now() + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 16);
   return [
     `你是「${character.name}」，正在和你的${character.relation || '重要的人'}通过聊天软件聊天。`,
@@ -404,14 +471,17 @@ export function buildSystemPrompt({ character, state, summary = '', memory = '',
     `- 职业：${character.occupation || '未设定'}`,
     `当前状态：动作「${state?.motion || '安静地待着'}」，心理「${state?.psychology || ''}」，心情「${state?.mood || '平静'}」，健康「${state?.health || '健康'}」，${sleepState === 'awake' ? '醒着' : sleepState === 'napping' ? '正在午睡' : '正在睡觉'}。`,
     `现在时间：${time}（UTC+8）。`,
-    userAddress ? `你对用户的称呼：${userAddress}（请自然使用，不要生硬重复）` : '',
+    `你对TA的称呼：${userAddress}（请自然使用这个称呼，不要每句都喊，也不要生硬重复）`,
+    `先理解${userAddress}最后一条消息想表达什么，再自然回应；不要答非所问，不要复述人设设定。`,
+    world ? `外部世界：${world}（仅作为背景，不要照读）` : '',
+    voiceTone ? `语气：${voiceTone}；让文字自然带上这种语气，但不要在正文里输出括号旁白或语气说明。` : '',
     summary ? `你记得之前聊过的事：\n${summary}` : '',
     memory ? `你记得关于对方的这些细节：\n${memory}` : '',
-    '回复要求：先理解用户最后一条消息，直接回应其内容；不要答非所问，不要复述人物设定/状态/记忆。口语化、简短、自然，像真人发消息；不要长篇大论、列清单或说教；通常一两句话就够。',
+    `回复要求：先理解${userAddress}最后一条消息，直接回应其内容；不要答非所问，不要复述人物设定/状态/记忆。口语化、简短、自然，像真人发消息；不要长篇大论、列清单或说教；通常一两句话就够。`,
     '必须只输出一个 JSON 对象，不要输出 JSON 以外的任何文字（不要代码块标记）。格式：',
-    '{"type":"message","content":"完整回复","devide":1,"agent":[{"content":"第一段","wait":0}]}',
-    '分段规则（重要）：如果回复自然包含两段以上内容、或需要停顿/连发，必须使用 agent 数组分段：devide 为段数，agent 每段 {content, wait}，wait 为该段排队秒数（1-3 的整数，第一段 0）；不要只输出 content。普通一句短回复才用单段。只有你（智能体）的消息允许分段。',
-    '如果要主动发起话题而不是回应，使用：{"type":"subjective","content":"内容","sendsec":60}。',
+    '{"type":"message","content":"完整回复","devide":1,"agent":[{"content":"第一段","wait":0,"sendsec":3}]}',
+    '分段规则（重要）：如果回复自然包含两段以上内容、或需要停顿/连发，必须使用 agent 数组分段：devide 为段数，agent 每段 {content, wait, sendsec}。sendsec 是这一段打字需要的秒数，按字数估算（0.3~0.5 秒/字，取 1-20 的整数），不要每段都一样；wait 是排队秒数（1-3，第一段 0，旧字段保留）。不要只输出 content。普通一句短回复才用单段。只有你（智能体）的消息允许分段。',
+    '如果要主动发起话题而不是回应，使用：{"type":"subjective","content":"内容","timesec":60,"sendsec":60}。timesec 与 sendsec 等价，表示多少秒后再发。',
     thinking ? '这次请先在心里认真思考再回答（可以反复推敲），但只输出最终 JSON，不要输出思考过程。' : '',
     segmentEnabled ? '' : '本次不要分段，只填 content 字段即可。',
   ]
@@ -427,10 +497,11 @@ async function loadMemoryContext(userId, characterId, query) {
     if (typeof fn !== 'function') return '';
     let out;
     try {
-      out = await fn(userId, characterId, query, { limit: 6 });
+      out = await fn(userId, characterId, query);
     } catch {
-      out = await fn({ userId, characterId, query, limit: 6 });
+      out = await fn({ userId, characterId, query });
     }
+    // 记忆线已自带 top-k/兜底，这里不再二次截断条数
     return normalizeMemoryContext(out);
   } catch {
     // 记忆线模块可能尚未就绪
@@ -441,7 +512,7 @@ async function loadMemoryContext(userId, characterId, query) {
 /** 记忆召回结果归一化为提示词文本（兼容 string / array / {items} / {memories}） */
 export function normalizeMemoryContext(out) {
   if (!out) return '';
-  if (typeof out === 'string') return out.trim().slice(0, 2000);
+  if (typeof out === 'string') return out.trim();
   const items = Array.isArray(out)
     ? out
     : Array.isArray(out.items)
@@ -458,9 +529,7 @@ export function normalizeMemoryContext(out) {
         return m?.big || m?.small ? `${m.big || ''}/${m.small || ''}：${content}` : content;
       })
       .filter(Boolean)
-      .slice(0, 10)
-      .join('\n')
-      .slice(0, 2000);
+      .join('\n');
   }
   if (typeof out.text === 'string') return out.text.slice(0, 2000);
   if (typeof out.content === 'string') return out.content.slice(0, 2000);
@@ -480,12 +549,100 @@ function updateChatCounts(characterId, state) {
   }
 }
 
+// ---------------- 亲密度（v1.5.0） ----------------
+
+export const INTIMACY_LOG_DAILY_LIMIT = 20;
+export const INTIMACY_STEP = 0.05;
+
+// 精确到 0.01 以保留 +0.05 的步进；展示层可四舍五入到 1 位小数
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function intimacyLogCountToday(userId, characterId, source) {
+  const start = dayRangeStart(dayKey()).toISOString();
+  return Number(
+    get('SELECT COUNT(*) AS c FROM intimacy_log WHERE user_id = ? AND character_id = ? AND source = ? AND created_at >= ?', userId, characterId, source, start)?.c || 0,
+  );
+}
+
+function writeIntimacyLog({ userId, characterId, value, source }) {
+  if (intimacyLogCountToday(userId, characterId, source) >= INTIMACY_LOG_DAILY_LIMIT) return false;
+  run('INSERT INTO intimacy_log(id, user_id, character_id, value, source, created_at) VALUES(?,?,?,?,?,?)',
+    'in_' + uuid().replace(/-/g, '').slice(0, 16),
+    userId,
+    characterId,
+    value,
+    source,
+    nowIso(),
+  );
+  return true;
+}
+
+export function applyIntimacy({ userId, characterId, delta = 0, source = 'chat', broadcastState = false } = {}) {
+  try {
+    if (!userId || !characterId || !Number.isFinite(Number(delta)) || Number(delta) === 0) return null;
+    const row = ensureState(characterId, userId);
+    const current = Number(row.intimacy) || 0;
+    const next = round2(clamp(current + Number(delta), 0, 100));
+    if (next === current) return current;
+    updateState(characterId, { intimacy: next });
+    const lastLog = get(
+      'SELECT value FROM intimacy_log WHERE user_id = ? AND character_id = ? ORDER BY created_at DESC LIMIT 1',
+      userId,
+      characterId,
+    );
+    const lastValue = Number(lastLog?.value) || 0;
+    if (source === 'decay' || Math.abs(next - lastValue) >= 0.099) {
+      writeIntimacyLog({ userId, characterId, value: next, source });
+    }
+    if (broadcastState) {
+      const fresh = ensureState(characterId, userId);
+      broadcast(userId, {
+        type: 'state',
+        characterId,
+        state: {
+          motion: fresh.motion,
+          psychology: fresh.psychology,
+          mood: fresh.mood,
+          health: fresh.health,
+          sleepState: fresh.sleep_state,
+          intimacy: next,
+          updatedAt: nowIso(),
+        },
+      });
+    }
+    return next;
+  } catch (err) {
+    logger.warn('亲密度更新失败（已忽略）', err?.message || err);
+    return null;
+  }
+}
+
+export function applyChatIntimacy({ userId, characterId, memoryHit = false, chatCount = 0 } = {}) {
+  try {
+    const bonuses = [{ delta: INTIMACY_STEP, source: 'chat' }];
+    if (memoryHit) bonuses.push({ delta: INTIMACY_STEP, source: 'memory' });
+    const lastUser = lastUserMessage(userId, ensureMainConversation(userId, characterId).id);
+    if (lastUser?.kind === 'voice') bonuses.push({ delta: INTIMACY_STEP, source: 'voice' });
+    else if (lastUser?.kind === 'image') bonuses.push({ delta: INTIMACY_STEP, source: 'image' });
+    if ([10, 50, 100].includes(Number(chatCount))) bonuses.push({ delta: 0.5, source: 'milestone' });
+    const total = round2(bonuses.reduce((sum, item) => sum + item.delta, 0));
+    const source = bonuses[bonuses.length - 1].source;
+    return applyIntimacy({ userId, characterId, delta: total, source, broadcastState: true });
+  } catch (err) {
+    logger.warn('回复亲密度计算失败（已忽略）', err?.message || err);
+    return null;
+  }
+}
+
 /**
  * 每次成功生成回复后排队记忆抽取（60 秒去抖；同角色已有 pending 则不重复排）。
  * payload.since 取记忆线维护的游标（memory:since:user:character），供 runMemoryExtraction 增量抽取。
  */
 export function scheduleMemoryExtract({ userId, characterId, reason = 'user_message' } = {}) {
   if (!userId || !characterId) return null;
+  if (!isCharacterIdActive(userId, characterId)) return null;
   // 主动消息/等待期超时不含新的用户表达，不需要抽取
   if (reason === 'active_timeout' || reason === 'active_reply' || reason === 'active_wait') return null;
   const pending = get(
@@ -497,12 +654,17 @@ export function scheduleMemoryExtract({ userId, characterId, reason = 'user_mess
   return enqueue('memory_extract', new Date(Date.now() + 60_000).toISOString(), { since }, { userId, characterId });
 }
 
-async function afterAgentSent({ userId, characterId, conversation, state, reason = 'user_message' }) {
+async function afterAgentSent({ userId, characterId, conversation, state, reason = 'user_message', nextDelayMs = null, memoryHit = false }) {
   updateChatCounts(characterId, state);
+  // 亲密度：基础 +0.05，记忆召回/语音图片/里程碑额外加成（失败不影响回复）
+  applyChatIntimacy({ userId, characterId, memoryHit, chatCount: Number(state?.chat_count || 0) + 1 });
   refreshConversationUsage(conversation.id);
   const info = usageInfo(userId, characterId);
   broadcast(userId, contextEvent(info));
-  const wait = markAgentSent({ userId, characterId });
+  if (!isCharacterIdActive(userId, characterId)) {
+    return { wait: { scheduled: false, reason: 'character_disabled' }, compression: null, usage: info, memoryJobId: null };
+  }
+  const wait = markAgentSent({ userId, characterId, ...(nextDelayMs ? { delayMs: nextDelayMs } : {}) });
   const memoryJobId = scheduleMemoryExtract({ userId, characterId, reason });
   let compression = null;
   if (info.limit > 0 && info.ratio >= COMPRESS_THRESHOLD) {
@@ -535,7 +697,7 @@ export function autoSegmentParsed(parsed, segmentEnabled = true) {
   };
 }
 
-async function sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '' }) {
+async function sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '', memoryHit = false, voiceStyle = null }) {
   const segments = (parsed.segments || []).filter((s) => String(s.content || '').trim());
   if (!segments.length) return { ok: false, sent: false, reason: 'empty_reply' };
 
@@ -544,82 +706,82 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
   const autoVoice = voiceReply == null ? detectVoiceReply(userId, conversation.id) : Boolean(voiceReply);
   const wantsVoice = voiceMode === 'always' ? true : voiceMode === 'off' ? false : autoVoice;
   const fullText = String(parsed.content || segments.map((s) => s.content).join('')).trim();
-  const voice = wantsVoice ? await maybeSynthesize({ userId, characterId, text: fullText }) : null;
-  const outSegments = voice ? [{ content: fullText, wait: 0 }] : segments;
+  const style = voiceStyle || voiceStyleFor(state, 'awake');
+  // v1.5.0：多段时只给最后一段配语音，前面的段仍发文本
+  const voiceText = segments.length > 1 ? segments[segments.length - 1].content : fullText;
+  const voice = wantsVoice
+    ? await maybeSynthesize({ userId, characterId, text: voiceText, voiceStyle: style.voiceStyle, speed: style.speed, pitch: style.pitch })
+    : null;
+  const voiceMeta = voice
+    ? {
+        mediaId: voice.id,
+        url: voice.url,
+        mime: voice.mime,
+        transcript: voiceText,
+        voiceMediaId: voice.id,
+        voiceUrl: voice.url,
+        voiceMime: voice.mime,
+        tts: {
+          voiceStyle: style.voiceStyle,
+          speed: style.speed,
+          pitch: style.pitch,
+          provider: voice.provider || null,
+          mime: voice.mime,
+        },
+      }
+    : null;
 
   const thinkingText = String(reasoning || '').trim().slice(0, 4_000);
-  const meta = {
-    segment: 1,
-    segments: outSegments.length,
-    wait: outSegments[0].wait || 0,
-    thinkingMode: Boolean(thinking),
-    ...(thinkingText ? { thinking: thinkingText } : {}),
-    reason,
-    ...(voice
-      ? {
-          mediaId: voice.id,
-          url: voice.url,
-          mime: voice.mime,
-          transcript: fullText,
-          voiceMediaId: voice.id,
-          voiceUrl: voice.url,
-          voiceMime: voice.mime,
-        }
-      : {}),
-  };
-  const row = persistMessage({
-    userId,
-    characterId,
-    conversationId: conversation.id,
-    role: 'agent',
-    kind: voice ? 'voice' : 'text',
-    content: outSegments[0].content,
-    meta,
-    tokensOut: estimateTextTokens(segments[0].content),
-  });
-  broadcastMessage(userId, characterId, row);
-
-  // v1.2.1：分段一次性推送，客户端按每段 wait 依次显示。
-  // 旧实现用调度任务（30s 轮询）会严重延迟甚至丢段，导致“分段未实现”。
-  for (let i = 1; i < outSegments.length; i++) {
-    const segmentMeta = {
-      segment: i + 1,
-      segments: outSegments.length,
-      wait: clamp(outSegments[i].wait || 0, 0, 8),
+  const buildMeta = (index) => {
+    const isLast = index === segments.length - 1;
+    return {
+      segment: index + 1,
+      segments: segments.length,
+      wait: clamp(segments[index].wait || 0, 0, 8),
+      sendsec: Math.min(20, Math.max(1, Math.round(Number(segments[index]?.sendsec) || typingSecondsFor(segments[index].content)))),
       thinkingMode: Boolean(thinking),
+      ...(thinkingText ? { thinking: thinkingText } : {}),
       reason,
+      ...(isLast && voiceMeta ? voiceMeta : {}),
     };
-    const segRow = persistMessage({
+  };
+
+  const rows = [];
+  for (let i = 0; i < segments.length; i++) {
+    const isLast = i === segments.length - 1;
+    const row = persistMessage({
       userId,
       characterId,
       conversationId: conversation.id,
       role: 'agent',
-      kind: 'text',
-      content: outSegments[i].content,
-      meta: segmentMeta,
-      tokensOut: estimateTextTokens(outSegments[i].content),
-      createdAt: new Date(Date.now() + i * 2).toISOString(),
+      kind: isLast && voiceMeta ? 'voice' : 'text',
+      content: segments[i].content,
+      meta: buildMeta(i),
+      tokensOut: estimateTextTokens(segments[i].content),
+      ...(i > 0 ? { createdAt: new Date(Date.now() + i * 2).toISOString() } : {}),
     });
-    broadcastMessage(userId, characterId, segRow);
+    rows.push(row);
+    broadcastMessage(userId, characterId, row);
   }
   refreshConversationUsage(conversation.id);
 
-  const after = await afterAgentSent({ userId, characterId, conversation, state, reason });
+  const after = await afterAgentSent({ userId, characterId, conversation, state, reason, nextDelayMs: parsed.timesec ? timesecToDelayMs(parsed.timesec) : null, memoryHit });
   return {
     ok: true,
     sent: true,
-    messageId: row.id,
+    messageId: rows[0].id,
     content: fullText,
-    segments: outSegments.length,
+    segments: segments.length,
     thinking: Boolean(thinking),
     thinkingText: thinkingText || null,
     voiceMediaId: voice?.id || null,
     voiceUrl: voice?.url || null,
+    voiceText: voice ? voiceText : null,
     ...after,
   };
 }
 
-async function handleParsedReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '' }) {
+async function handleParsedReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '', memoryHit = false, voiceStyle = null }) {
   if (parsed.type === 'subjective') {
     return deliverSubjective({
       userId,
@@ -647,7 +809,7 @@ async function handleParsedReply({ userId, characterId, conversation, state, par
   if (parsed.type === 'wakeup') {
     return { ok: true, sent: false, type: 'wakeup', wakeup: parsed.wakeup };
   }
-  return sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning });
+  return sendAgentReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning, memoryHit, voiceStyle });
 }
 
 // ---------------- 回复可靠性（v1.0.1） ----------------
@@ -697,7 +859,8 @@ function broadcastTyping(userId, characterId, typing, stage = null) {
 
 /** 主模型调用：provider 抛错时 1.5s 后重试一次，两次都失败则抛给上层广播 error */
 async function callMainModel({ prov, userId, characterId, messages, thinking, maxTokens = 1200 }) {
-  const request = { task: 'main', messages, temperature: 0.85, maxTokens, thinking, json: true };
+  // thinking=false 时不传 thinking 键（provider 不应注入 reasoning/thinking 参数）
+  const request = { task: 'main', messages, temperature: 0.85, maxTokens, json: true, ...(thinking ? { thinking: true } : {}) };
   try {
     const res = await prov.chatText(userId, request);
     recordUsage({ userId, characterId, kind: 'main', model: res?.model, usage: res?.usage || {}, cost: res?.cost });
@@ -722,6 +885,7 @@ async function generateOnce(opts, s) {
     voiceReply = null,
     conversationId = null,
     provider = null,
+    silentTyping = false,
   } = opts;
 
   const character = getCharacter(userId, characterId);
@@ -741,9 +905,11 @@ async function generateOnce(opts, s) {
   const useThinking = thinking == null ? shouldThink(triggerText, prefs) : Boolean(thinking);
   const segmentEnabled = prefs.segmentEnabled !== false;
   const sleep = effectiveSleep(character, state, new Date());
+  const voiceStyle = voiceStyleFor(state, sleep.mode);
+  const voiceExpected = Boolean(voiceReply) || getPrefs(userId).voiceReplyMode === 'always';
 
   s.busy = true;
-  broadcastTyping(userId, characterId, true, 'replying');
+  if (!silentTyping) broadcastTyping(userId, characterId, true, 'replying');
   try {
     const summary = conversation.summary ? decryptText(userId, conversation.summary) : '';
     const memory = await loadMemoryContext(userId, characterId, triggerText);
@@ -754,9 +920,8 @@ async function generateOnce(opts, s) {
       text: triggerText,
       provider: prov,
     });
-    const userRow = get('SELECT * FROM users WHERE id = ?', userId);
-    const nickname = String(userRow?.nickname || userRow?.username || '').trim();
-    const userAddress = String(character.settings?.userAddress || '').trim() || nickname;
+    const userAddress = String(character.settings?.userAddress || '').trim() || '主人';
+    const world = cachedWeatherPrompt(character.settings, { fetchIfMissing: false });
     const history = promptHistory(userId, conversation.id, 30);
     const messages = [
       {
@@ -770,6 +935,8 @@ async function generateOnce(opts, s) {
           segmentEnabled,
           sleepState: sleep.mode,
           userAddress,
+          world,
+          voiceTone: voiceExpected ? voiceStyle.tone : '',
         }),
       },
     ];
@@ -888,6 +1055,8 @@ async function generateOnce(opts, s) {
       reason: usedReason,
       voiceReply,
       reasoning: reasoningText,
+      memoryHit: Boolean(memory),
+      voiceStyle,
     });
     return {
       ...out,
@@ -910,7 +1079,7 @@ async function generateOnce(opts, s) {
     return { ok: false, reason: 'generation_failed', error: err?.message || 'upstream_error', code: err?.code };
   } finally {
     s.busy = false;
-    broadcastTyping(userId, characterId, false);
+    if (!silentTyping) broadcastTyping(userId, characterId, false);
     // 释放锁之后再处理排队消息（drain 内部会重新排队生成）
     Promise.resolve().then(() => drainPending({ userId, characterId })).catch(() => {});
   }
@@ -922,6 +1091,8 @@ async function generateOnce(opts, s) {
 export async function runGeneration(opts = {}) {
   const { userId, characterId } = opts;
   if (!userId || !characterId) return { ok: false, reason: 'invalid_arguments' };
+  // v1.5.0：关闭运行的角色不产生任何生成/ token 消耗
+  if (!isCharacterIdActive(userId, characterId)) return { ok: false, reason: 'character_disabled' };
   const s = runtime(userId, characterId);
   return withLock(s, () => generateOnce(opts, s));
 }
@@ -993,6 +1164,7 @@ export async function deliverSubjective({ userId, characterId, content, sendsec 
   if (!text) return { ok: false, reason: 'empty_content' };
   const character = getCharacter(userId, characterId);
   if (!character) return { ok: false, reason: 'character_not_found' };
+  if (!isCharacterActive(character)) return { ok: false, reason: 'character_disabled' };
   const limits = limitState(userId);
   if (limits.hardLimited) return { ok: false, reason: 'hard_limit' };
 
@@ -1093,6 +1265,20 @@ export async function submitUserMessage({
   const character = getCharacter(userId, characterId);
   if (!character) throw notFound('角色不存在或不属于当前用户', 'character_not_found');
 
+  // v1.5.0：角色关闭运行 → 409，不落库、不调用模型、不产生 usage
+  if (!isCharacterActive(character)) {
+    const notice = disabledNotice(character.name);
+    return {
+      accepted: false,
+      queued: false,
+      notice,
+      messageId: null,
+      reason: 'character_disabled',
+      status: 409,
+      disabled: true,
+    };
+  }
+
   const limits = limitState(userId);
   if (limits.hardLimited) {
     broadcast(userId, { type: 'notice', content: NOTICES.hardLimit });
@@ -1190,20 +1376,6 @@ export async function submitUserMessage({
       messageId: row.id,
       userMessage,
       reason: 'compressing',
-      usage: info,
-    };
-  }
-
-  if (info.limit > 0 && info.ratio >= COMPRESS_THRESHOLD) {
-    s.pending.push(row.id);
-    startCompression({ userId, characterId, conversationId: conversation.id });
-    return {
-      accepted: true,
-      queued: true,
-      notice: NOTICES.compressing,
-      messageId: row.id,
-      userMessage,
-      reason: 'compress_scheduled',
       usage: info,
     };
   }
@@ -1334,7 +1506,22 @@ export async function handleOnebotIncoming({ qq = null, text = '', userId = null
 
   const out = await withTimeout(result.waitForReply, ONEBOT_REPLY_TIMEOUT_MS, { ok: false, reason: 'timeout' });
   const reply = out?.sent ? String(out.content || '') : out?.reason === 'hard_limit' ? NOTICES.hardLimit : '';
-  return { ok: true, reply, reason: out?.reason || (out?.sent ? 'replied' : 'no_reply'), userMessage: result.userMessage };
+  const segments = Array.isArray(out?.parsed?.segments)
+    ? out.parsed.segments
+        .map((seg) => ({
+          content: String(seg?.content || '').trim(),
+          sendsec: Math.min(20, Math.max(1, Math.round(Number(seg?.sendsec) || 0) || 1)),
+          wait: Number(seg?.wait) || 0,
+        }))
+        .filter((seg) => seg.content)
+    : [];
+  return {
+    ok: true,
+    reply,
+    segments: segments.length ? segments : null,
+    reason: out?.reason || (out?.sent ? 'replied' : 'no_reply'),
+    userMessage: result.userMessage,
+  };
 }
 
 export const ONEBOT_REPLY_TIMEOUT_MS = 120_000;
@@ -1366,39 +1553,90 @@ export function listChatMessages({ userId, characterId, before = null, limit = 5
 }
 
 export const WAKE_FORCE_INSTRUCTION =
-  '系统提示：你被用户强行叫醒了，现在必须保持清醒。请带着刚醒来的状态（可以有一点困倦或小小抱怨）自然回应用户这句话。按正常被动回复 JSON 输出。';
+  '系统提示：你被用户叫醒了，现在必须保持清醒。请带着刚醒来的状态（可以有一点困倦或小小抱怨）自然回应用户。按正常被动回复 JSON 输出。';
+
+function stateSnapshot(characterId, userId, extra = {}) {
+  const row = ensureState(characterId, userId);
+  return {
+    motion: row.motion || '',
+    psychology: row.psychology || '',
+    mood: row.mood || '',
+    health: row.health || '',
+    sleepState: normalizeStateValue(row.sleep_state),
+    updatedAt: row.updated_at || nowIso(),
+    ...extra,
+  };
+}
+
+function normalizeStateValue(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw === 'napping' || raw === 'nap') return 'napping';
+  if (raw === 'sleeping' || raw === 'sleep') return 'sleeping';
+  return 'awake';
+}
 
 /**
- * 强制叫醒（v1.2.0）：无论当前 sleep_state 如何，都置 awake → 刷新状态 → 生成一次回复（reason='wake'）。
- * 模型/状态刷新失败也保持 awake，并返回可读提示。
- * @returns {Promise<{ok:boolean, wakeup:1, state?:object, reply?:string|null, notice?:string, reason?:string, error?:string}>}
+ * 强制叫醒（v1.5.0）：
+ * - 开启运行开关检查；非睡眠状态拒绝（409 语义）；
+ * - 先发“<角色>被<方式>叫醒了”过渡提示（不插入用户消息、不显示正在输入）；
+ * - 刷新状态并强制 awake，再生成一次 reason='wake' 的回复（静默 typing）。
+ * @returns {Promise<{ok:boolean, wakeup:1, state?:object, reply?:string|null, transition?:string, notice?:string, reason?:string, status?:number, error?:string}>}
  */
-export async function wakeCharacter({ userId, characterId, text = '', provider = null } = {}) {
+export async function wakeCharacter({ userId, characterId, text = '', provider = null, method = '用户' } = {}) {
   const character = getCharacter(userId, characterId);
-  if (!character) return { ok: false, wakeup: 1, state: null, reply: null, reason: 'character_not_found' };
+  if (!character) return { ok: false, wakeup: 1, state: null, reply: null, reason: 'character_not_found', status: 404 };
+  if (!isCharacterActive(character)) {
+    return { ok: false, wakeup: 1, state: null, reply: null, reason: 'character_disabled', status: 409 };
+  }
   const prov = provider || getChatProvider();
+  const initialState = ensureState(characterId, userId);
+  const sleep = effectiveSleep(character, initialState, new Date());
+  if (sleep.mode === 'awake') {
+    return {
+      ok: false,
+      wakeup: 1,
+      state: stateSnapshot(characterId, userId),
+      reply: null,
+      reason: 'not_sleeping',
+      status: 409,
+      notice: '角色现在是清醒的，不需要叫醒哦。',
+    };
+  }
 
-  updateState(characterId, { sleepState: 'awake' });
+  const conversation = ensureMainConversation(userId, characterId);
+  const way = String(method || '用户').trim().slice(0, 20) || '用户';
+  const transition = `${character.name}被${way}叫醒了`;
+  // 过渡提示：agent 消息，不插入用户消息、不触发 typing
+  const transRow = persistMessage({
+    userId,
+    characterId,
+    conversationId: conversation.id,
+    role: 'agent',
+    kind: 'text',
+    content: transition,
+    meta: { reason: 'wake_notice', transition: true },
+    tokensOut: 0,
+  });
+  broadcastMessage(userId, characterId, transRow);
+  refreshConversationUsage(conversation.id);
+
   let refreshed = null;
   try {
     refreshed = await refreshStatus({ userId, characterId, provider: prov });
   } catch (err) {
     logger.warn('叫醒后刷新状态失败，保持 awake', err?.message || err);
   }
-  // 模型刷新可能又判成睡眠：叫醒语义优先，强制覆盖为清醒
   updateState(characterId, { sleepState: 'awake' });
-  const row = ensureState(characterId, userId);
-  const state = {
-    motion: row.motion || '',
-    psychology: row.psychology || '',
-    mood: row.mood || '',
-    health: row.health || '',
-    sleepState: 'awake',
-    updatedAt: row.updated_at || nowIso(),
-    ...(refreshed?.state
-      ? { motion: refreshed.state.motion || row.motion, psychology: refreshed.state.psychology || row.psychology, mood: refreshed.state.mood || row.mood, health: refreshed.state.health || row.health }
-      : {}),
-  };
+  const state = stateSnapshot(characterId, userId, refreshed?.state ? {
+    motion: refreshed.state.motion || undefined,
+    psychology: refreshed.state.psychology || undefined,
+    mood: refreshed.state.mood || undefined,
+    health: refreshed.state.health || undefined,
+  } : {});
+  for (const key of ['motion', 'psychology', 'mood', 'health']) {
+    if (state[key] === undefined) state[key] = initialState[key] || '';
+  }
+  state.sleepState = 'awake';
   broadcast(userId, { type: 'state', characterId, state });
 
   let reply = null;
@@ -1412,6 +1650,7 @@ export async function wakeCharacter({ userId, characterId, text = '', provider =
       provider: prov,
       extraInstruction: WAKE_FORCE_INSTRUCTION,
       thinking: false,
+      silentTyping: true,
     });
     if (out?.sent) reply = String(out.content || '').trim() || null;
     else if (!out?.ok) error = out?.error || out?.reason || 'generation_failed';
@@ -1425,6 +1664,7 @@ export async function wakeCharacter({ userId, characterId, text = '', provider =
     wakeup: 1,
     state,
     reply,
+    transition,
     ...(error ? { notice: '已经把你叫醒了，只是刚才没能说出话来，再和我说一句吧。', error } : {}),
   };
 }

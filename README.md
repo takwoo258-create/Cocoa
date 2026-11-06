@@ -1,254 +1,241 @@
+<div align="center">
+
 # Cocoa
 
-> 虚拟智能体陪伴系统 —— 后端（Node.js）+ Android 客户端（Flutter），开源协议 GPLv3。
+让角色真正生活在自己的世界里，也记得与你说过的每一句话。
 
-Cocoa 让用户自己配模型、自己捏角色：角色有独立人设、记忆、状态、作息、日记与创作，能通过 QQ 主动找人聊天，也能在 App 里被"叫醒"。所有文本落盘前多重对称加密，角色与角色、用户与用户之间数据完全隔离。
+Node.js 后端 · Flutter Android 客户端 · GPL-3.0
 
-- 最新版本：`v1.3.1`（更新日志见 [`update1.3.1.md`](update1.3.1.md)）
-- Android 安装包：GitHub Release 页面 → `Cocoa-v1.3.1.apk`（后端源码包 `Cocoa-backend-v1.3.1.zip` 同页）
-- 接口契约：[`docs/API.md`](docs/API.md)　部署手册：[`docs/DEPLOY.md`](docs/DEPLOY.md)
+</div>
 
----
+<hr>
 
-## 1. 功能概览
+## 简介
 
-| 模块 | 能力 |
+Cocoa 是一套可自行部署的虚拟智能体陪伴系统。后端用 Node.js、Express 与 SQLite 承担角色、对话、记忆、创作、统计与 QQ 接入，Android 客户端用 Flutter 承担日常交互。
+
+角色不是一问一答的聊天窗口：它们有独立人设、动态状态与作息，会自己写日记与小说，会记住你说过的事，也会在你安静下来之后主动来找你。模型服务由使用者自行填写（OpenAI 兼容协议），数据保存在自己部署的实例里，角色之间、用户之间彼此隔离。
+
+## 核心能力
+
+### 对话
+
+- **分段回复**：模型按单句下发多段消息，客户端按每段的 `sendsec`（约 0.3–0.5 秒每字，模型按长度给出）逐条显示，段间保持输入状态，不再整段刷出。
+- **句子完整性判断**：用户拆成碎片发送时，消息先经过判定会话；不完整则继续等待后续输入，最多 6 秒，超时按当前内容生成回复，避免对话断续。
+- **多模态消息**：支持文本、图片、语音；语音与图片先转写为文字描述，再与文本合并送入主模型。
+- **主动回复**：角色回复后进入等待期，超时由模型判断是否追问，并给出下一次主动消息的间隔（`timesec`）；多次追问无果会沉淀为记忆点。
+- **上下文管理**：按模型上下文窗口计算占用，接近上限时在回复结束后压缩；调试模式展示占用明细。
+
+### 状态与作息
+
+- 状态是动态剧本：动作、心理、心情、健康按 5 分钟到更长区间刷新，并随记忆与交往变化。
+- 作息独立展示：每天首次刷新由模型确定当日作息，允许熬夜、晚起、早睡与大幅调整；到达入睡或起床节点时立即刷新状态。
+- 入睡时角色卡片切换为夜幕背景；叫醒入口按当前作息状态判断，叫醒后给出过渡提示。
+
+### 记忆
+
+- 语义记忆：Embedding 生成记忆点，构成「智能体 → 大类目 → 小类目 → 记忆点」的关联网络。
+- 三维网图：可旋转、缩放、平移，节点按权重发光，点选查看详情。
+- 记忆调用：对话时按相关性检索并注入上下文，角色可主动提起旧事；也会从对话中提取用户特征形成记忆。
+
+### 创作
+
+- 小说、散文、日记独立成篇，按文体使用独立会话；连载作品各自维护上下文，接近窗口上限时压缩前文。
+- 标题与文体受约束，篇幅按文体控制；日记由角色自己写，阅读新闻后会写下感想。
+- 日记本需要六位密码解锁，密码每日随机，角色只给暗示不给明文。
+
+### 共享广场
+
+- **人设模板**：保存、导入、一键套用；可从已有角色导入人设，也可把模板发布到广场。
+- **模型使用权**：把自己的模型配置公开给指定用户、本服广场或全球广场，可设时长、截止时间或永久，并配置 Token 软/硬限额。
+- **share ID**：每位用户拥有 8 位随机 share ID，可复制、可搜索，支持跨服务器分享。
+- **通知与治理**：资源被使用、额度触顶、使用权到期均有应用内与邮件通知；分享只可点赞；管理端可对分享权限做停用处理并设置期限。
+
+### 主题
+
+- 主界面与聊天界面可分别设置壁纸（内置样式或本地图片）。
+- 字体可选系统字体、内置字体或导入字体文件；字号可调并实时演示。
+- 动效强度可设为关闭、减弱或正常。
+
+### 统计
+
+- Token 消耗按输入命中、输入未命中、输出三分支统计，支持按模型与时间范围筛选；「今日」可按小时段查看。
+- 模型消耗与陪伴天数分页展示，含亲密度与陪伴天数曲线；图表详情以悬浮浮窗呈现。
+- 管理端提供全局用量、用户、会话、日志、存储与在线状态。
+
+### QQ 接入
+
+- OneBot11 反向 WebSocket 接入 NapCat，按 QQ 号路由到用户绑定的角色。
+- 支持 QQ 侧收发消息、输入状态、语音消息与 QQ 空间动态。
+- 未注册或配置缺失时返回明确提示，不影响其它功能。
+
+## 架构与技术栈
+
+```
+┌──────────────────────────┐   HTTPS / WebSocket   ┌──────────────────────────────────┐
+│ Flutter Android 客户端     │ ────────────────────▶ │ Cocoa 后端（Node.js / Express 5）   │
+│ 登录 · 对话 · 记忆 · 书架   │ ◀──────────────────── │ routes/  services/  ai/           │
+└──────────────────────────┘                       │ realtime/  onebot/  auth/  db/    │
+                                                   └───────────────┬──────────────────┘
+┌──────────────────────────┐   OneBot11 反向 WS                     │
+│ NapCat（自行部署）          │ ────────────────────▶  onebot 适配层   │
+└──────────────────────────┘                                       │
+                                                                   ▼
+                          SQLite（WAL）· 加密正文 vault · 媒体文件 · 运行日志
+                                                                   │
+                                                                   ▼
+                                        OpenAI 兼容服务（对话 / Embedding / 搜索 / STT / TTS）
+```
+
+| 层 | 技术 |
 | --- | --- |
-| 模型接入 | OpenAI 兼容协议；API Key / Base URL 在首次使用时录入；模型列表、连接测试、多模态能力（文本/图片/语音）以 SVG 图标标注 |
-| 多模态消息 | 语音 = 图片 > 文字 的推理顺序；图片/语音先经模型转写成文字描述，再与用户文本合并送入主模型 |
-| 上下文管理 | 按模型上下文窗口计算占用；≥85% 时在回复结束后压缩，期间用户输入排队并提示"在回味之前的记忆喵~"；调试模式显示环形进度条 |
-| 记忆系统 | Embedding 模型生成记忆点，构成「智能体 → 大类目 → 小类目 → 记忆点」神经网图；记忆点恒为白色、亮度 = 权重，关联记忆用虚线连接 |
-| 亲昵陪伴 | 九项人设字段 + 模糊词一键扩写为 JSON；多角色并行；默认关闭思考模式；句子完整性判定（yes/no）；口语化回复；分段发送（wait ≤ 8s） |
-| 角色世界 | 每 10 分钟刷新动作/心理/心情/健康；作息与睡眠提示；微博热搜 + RSS 阅读感想；日记与小说创作 |
-| 书架 | 小说 / 文集 / 阅读记录 / 日记独立页面；日记需六位密码，密码每日随机、角色只给暗示不给明文 |
-| 主动回复 | 回复后进入 60–80s 随机等待期；超时由模型判断是否追问，否则生成下一条主动消息（`subjective` + `sendsec`） |
-| 存储 | SQLite（WAL）存元信息，正文经多重对称加密后落 vault；数据库/消息/缓存用量可统计 |
-| 多用户 | 邮箱注册登录（验证码/密码双模式）、QQ 号绑定校验、细粒度角色隔离 |
-| 统计 | Token 三分支（输入命中/输入未命中/输出）、金额、模型维度筛选；陪伴天数、亲密度折线；管理员全局汇总 |
-| 管理端 | 用户管理、日志审计、SMTP 与 OneBot 配置、存储用量、在线用户与活跃会话 |
-| QQ 接入 | OneBot11 反向 WebSocket（NapCat 上报），按 `users.qq` 路由到用户默认角色 |
+| 运行时 | Node.js >= 22.5（推荐 24），ESM |
+| Web 框架 | Express 5，统一错误体与限流中间件 |
+| 数据库 | `node:sqlite`（`DatabaseSync`），WAL 模式，无外部数据库依赖 |
+| 实时通道 | `ws`，`/ws` 推送消息、输入状态、状态与上下文事件 |
+| 模型接入 | `openai` SDK，兼容任意 OpenAI 协议服务 |
+| 文件与邮件 | `multer` 处理上传，`nodemailer` 发送验证码与通知 |
+| 客户端 | Flutter / Dart >= 3.4，`fl_chart`、`web_socket_channel`、`flutter_secure_storage` 等 |
+| 存储 | 元信息入 SQLite，正文加密后落 vault，图片/语音/头像落 media |
+| 许可 | GPL-3.0 |
 
----
-
-## 2. 架构
+## 目录结构
 
 ```
-┌────────────────────────┐        HTTPS / WebSocket        ┌─────────────────────────────────────┐
-│  Flutter Android 客户端  │ ─────────────────────────────▶ │  Cocoa 后端（Node.js 24 + Express 5） │
-│  • 登录态 / 角色 / 对话   │ ◀───────────────────────────── │                                     │
-│  • 记忆网图 / 书架 / 统计 │        ws://host/ws?token=…     │  routes/       HTTP 契约（API.md）    │
-└────────────────────────┘                                 │  services/     角色·任务·审计·设置    │
-                                                           │  ai/           模型路由·用量·调度     │
-┌────────────────────────┐     OneBot11 反向 WS            │  realtime/hub  在线事件广播          │
-│  NapCat（QQ 机器人）      │ ──▶ ws://host:8787/onebot/ws    │  onebot/       QQ 消息适配           │
-│  由用户自行部署          │ ◀── (access_token 鉴权)          │  auth/ db/ core/ 鉴权·SQLite·加密    │
-└────────────────────────┘                                 └───────────────┬─────────────────────┘
-                                                                           │
-                                          ┌────────────────────────────────▼──────────────────────┐
-                                          │ SQLite WAL: data/cocoa.db                             │
-                                          │ data/vault/  加密正文（消息·人设·创作·记忆）            │
-                                          │ data/media/  图片·语音·头像                            │
-                                          │ data/logs/   cocoa.log（按级别）                       │
-                                          └───────────────────────────────────────────────────────┘
-                                                 │
-                                                 ▼  HTTPS
-                                  ┌────────────────────────────────────┐
-                                  │ 上游 OpenAI 兼容服务（对话/Embedding） │
-                                  │ DeepSeek（搜索/抓取）、STT、TTS 接口     │
-                                  └────────────────────────────────────┘
+Cocoa/
+├── app/                  Flutter Android 客户端
+│   ├── lib/core/         状态、主题、网络、WebSocket、存储
+│   ├── lib/models/       数据模型
+│   ├── lib/pages/        页面（对话、书架、记忆、统计、设置、管理端）
+│   ├── lib/services/     接口封装
+│   └── lib/widgets/      通用组件
+├── server/               后端
+│   ├── src/routes/       HTTP 契约
+│   ├── src/services/     角色、模板、广场、分享、审计、设置
+│   ├── src/ai/           对话、记忆、创作、状态、提示词、调度
+│   ├── src/realtime/     WebSocket hub
+│   ├── src/onebot/       QQ 适配层
+│   ├── src/db/           schema 与 SQLite 封装
+│   └── test/             单元与冒烟测试
+├── deploy/               环境模板、服务单元、安装与备份脚本
+├── scripts/              构建与工具链脚本
+├── docs/                 API 契约与部署手册
+├── update1.5.0.md        当前版本更新日志
+└── LICENSE               GPL-3.0
 ```
 
-约定：
+## 快速开始
 
-- 浏览器/客户端只与 `/api/*` 打交道；实时事件走 `/ws`；QQ 侧走 `/onebot/*`。
-- 主密钥 `COCOA_MASTER_KEY`（或首次启动自动生成的 `data/.masterkey`）是解密历史数据的唯一凭据，**丢失即不可恢复**，务必备份。
-- 单进程、无外部数据库依赖：`node:sqlite` 为 Node 22.5+ 内置模块，因此 `engines` 要求 `>=22.5`。
+### 环境要求
 
----
+- Node.js >= 22.5（推荐 24；`node:sqlite` 自 22.5 起内置）
+- 可访问的 OpenAI 兼容模型服务（对话与 Embedding）
+- 构建客户端另需 Flutter 3.x stable、JDK 17、Android SDK 35
 
-## 3. 快速开始（本地）
+### 后端
 
 ```bash
-# 1) 依赖（Node >= 22.5，推荐 24）
-git clone https://github.com/takwoo258-create/Cocoa.git
+git clone <仓库地址>
 cd Cocoa
-npm ci
-
-# 2) 配置
+npm install
 cp deploy/env.example .env
-#  至少填：COCOA_MASTER_KEY（>=32 字符）、COCOA_ADMIN_EMAIL / COCOA_ADMIN_PASSWORD
-#  生成主密钥：node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
-
-# 3) 启动
-npm start           # 生产
-npm run dev         # 开发（--watch 热重启）
-
-# 4) 验证
-curl http://127.0.0.1:8787/api/health
-# {"ok":true,"name":"cocoa","version":"1.3.1","time":"…","uptime":1}
+npm start
 ```
 
-测试：
+`npm run dev` 为热重启的开发模式。默认端口 `8787`，监听全部网卡，启动后可用健康检查确认：
 
 ```bash
-npm test            # node --test server/test/
-npm run smoke       # 端到端冒烟脚本
+curl -s localhost:8787/api/health
 ```
 
-首次登录：用 `.env` 里的 `COCOA_ADMIN_EMAIL / COCOA_ADMIN_PASSWORD`。服务启动时若库中不存在管理员则自动创建（`server/src/services/bootstrap.js`），之后修改 `.env` 不会覆盖已存在账号。
+首次启动会自动建库、建目录，并按环境变量创建初始管理员；库中已存在管理员时不会覆盖。
 
----
+### 环境变量
 
-## 4. 接口概览
+配置写在项目根目录的 `.env`，常用项：
 
-完整字段、错误结构与 JSON 协议见 [`docs/API.md`](docs/API.md)。前缀统一 `/api`，除 `/api/health` 与认证接口外均需 `Authorization: Bearer <token>`。
+| 变量 | 说明 |
+| --- | --- |
+| `PORT` | 监听端口，默认 `8787` |
+| `HOST` | 监听地址，默认监听全部网卡 |
+| `NODE_ENV` | 运行环境，`production` / `development` |
+| `COCOA_DATA_DIR` | 数据目录，默认项目下 `data/` |
+| `COCOA_MASTER_KEY` | 主密钥，至少 32 字符；留空时首次启动自动生成并落盘 |
+| `COCOA_TOKEN_TTL` | 登录令牌有效期（秒） |
+| `COCOA_ALLOW_REGISTER` | 设为 `0` 关闭注册 |
+| `COCOA_ADMIN_EMAIL` / `COCOA_ADMIN_PASSWORD` | 初始管理员账号，仅在库中无管理员时生效 |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | 邮件服务，用于验证码与通知 |
+| `ONEBOT_TOKEN` / `ONEBOT_SELF_ID` / `ONEBOT_WS_PATH` | OneBot11 接入参数 |
+| `COCOA_EMBEDDING_*` / `COCOA_SEARCH_*` | 默认 Embedding 与搜索服务，可在应用内覆盖 |
+
+主密钥可用以下命令生成：
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
+
+主密钥是解密历史数据的唯一凭据，需与数据一起备份；更换后旧正文无法解密。模型 API Key 在客户端首次配置时填写，服务端只回显掩码。
+
+### 测试
+
+```bash
+npm test        # 单元测试
+npm run smoke   # 端到端冒烟
+```
+
+### Android 客户端
+
+```bash
+cd app
+flutter pub get
+flutter analyze
+flutter build apk --release
+```
+
+产物为 `app/build/app/outputs/flutter-apk/app-release.apk`。发布签名在本地 `key.properties` 与密钥库中配置，两者都不入库；仓库内的 `scripts/build-apk.sh` 封装了同样的流程。安装后在客户端填写后端地址并完成模型配置，即可创建角色开始对话。
+
+## API 概览
+
+统一前缀 `/api`，除健康检查与认证接口外均需 `Authorization: Bearer <token>`；实时事件走 `/ws`，QQ 侧走 `/onebot/*`。完整字段、错误结构与模型回复协议见 [`docs/API.md`](docs/API.md)。
 
 | 分组 | 代表端点 | 说明 |
 | --- | --- | --- |
 | 健康检查 | `GET /api/health` | 存活探针，无需鉴权 |
-| 认证 | `POST /api/auth/send-code`、`/register`、`/login`、`GET /api/auth/me`、`/logout` | 邮箱验证码注册、密码/验证码登录、令牌吊销 |
-| 用户 | `GET/PUT /api/users/me` | 资料与就绪状态（`ready.chat/embedding`） |
-| 服务配置 | `GET/PUT /api/config`、`POST /api/config/models`、`/test`、`GET/PUT /api/config/preferences` | 多服务 apiKey（只回显掩码）、模型列表与连通性、模型分工与限额 |
-| 角色 | `GET/POST /api/characters`、`POST /api/characters/expand`、`/<id>/settings`、`/<id>/state` | 人设 CRUD、模糊词扩写、作息/RSS/创作配置、状态查询 |
-| 对话 | `POST /api/characters/:id/messages`、`GET …/messages`、`/active-reply`、`/wake`、`/context` | 发送（文本/图片/语音）、历史、主动回复、叫醒、上下文占用 |
-| 实时 | `WS /ws?token=` | `ready/message/typing/notice/context/state/profile/subjective/error` 事件 |
-| 记忆 | `GET /api/memory/graph`、`/:id`、`DELETE /:id`、`/search` | 网图节点/连线、详情、语义检索 |
-| 书架 | `GET /api/books`、`/:id`、`POST /api/books`、`/diary/unlock`、`/diary/lock-status` | 小说/文集/阅读/日记；日记密码每日随机 |
+| 认证 | `POST /api/auth/register`、`/login`、`/send-code`、`GET /api/auth/me` | 邮箱验证码与密码登录、令牌吊销 |
+| 用户 | `GET/PUT /api/users/me` | 资料与模型就绪状态 |
+| 服务配置 | `GET/PUT /api/config`、`POST /api/config/models`、`/test` | 多服务配置、模型列表与连通性测试 |
+| 角色 | `GET/POST /api/characters`、`/expand`、`/:id/settings`、`/:id/state` | 人设 CRUD、扩写、作息与状态 |
+| 对话 | `POST/GET /api/characters/:id/messages`、`/active-reply`、`/wake`、`/context` | 发送、历史、主动回复、叫醒、上下文占用 |
+| 实时 | `WS /ws?token=` | 消息、输入状态、状态、上下文与错误事件 |
+| 记忆 | `GET /api/memory/graph`、`/:id`、`/search` | 网图、详情、语义检索 |
+| 书架 | `GET/POST /api/books`、`/:id`、`/diary/unlock` | 小说、文集、阅读记录、日记 |
+| 模板 | `GET/POST /api/templates`、`/import`、`/:id/apply`、`/:id/publish` | 人设模板管理与发布 |
+| 广场 | `GET /api/plaza/resources`、`POST /:id/like`、`/:id/use`、`GET /api/plaza/share-id` | 资源浏览、点赞、使用与 share ID |
 | 统计 | `GET /api/stats/usage`、`/intimacy`、`/overview` | Token 三分支、亲密度、陪伴天数 |
-| 管理端 | `GET /api/admin/overview`、`/users`、`/logs`、`/settings`、`/storage`、`/onebot/status` | 全局统计、用户与审计、SMTP/OneBot 配置 |
-| 媒体 | `POST /api/media`（multipart）、`GET /api/media/:id` | 图片/语音/头像上传与鉴权读取 |
-| QQ(OneBot) | `WS /onebot/ws?access_token=`、`POST /onebot/event`、`GET /onebot/status` | NapCat 上报入口 |
+| 管理端 | `GET /api/admin/overview`、`/users`、`/logs`、`/settings`、`/storage` | 全局统计、用户与审计、服务配置 |
+| 媒体 | `POST /api/media`、`GET /api/media/:id` | 图片、语音、头像上传与鉴权读取 |
+| 版本 | `GET /api/version/latest`、`/updates` | 版本信息与更新说明 |
+| QQ(OneBot) | `WS /onebot/ws`、`POST /onebot/event`、`GET /onebot/status` | NapCat 上报入口 |
 
-各接口的 JSON 结构、模型回复协议（`type: message/profile/subjective/status/wakeup`、分段 `wait` 0–8s）与错误码，均以 `docs/API.md` 为准。
+模型回复协议（`type: message/profile/status/subjective/wakeup`、分段 `sendsec` 与兼容字段 `wait`、主动消息 `timesec`）与全部错误码以 `docs/API.md` 为准。
 
----
+## 版本与更新说明
 
-## 5. Android 客户端
+当前版本 **1.5.0**（2026-11-07），本版更新见 [`update1.5.0.md`](update1.5.0.md)。历史版本日志：
 
-- 技术栈：Flutter（Dart `>=3.4`），仅 Android；包名/版本见 [`app/pubspec.yaml`](app/pubspec.yaml)。
-- 依赖：`http`、`web_socket_channel`、`shared_preferences`、`flutter_secure_storage`、`fl_chart`、`image_picker`、`record`、`just_audio`、`path_provider`。
-- 保持登录态：令牌存 `flutter_secure_storage`，启动校验 `GET /api/auth/me`。
-- 启动后先在设置里填模型 API（不配置无法对话），再创建角色。
+| 版本 | 日期 | 日志 |
+| --- | --- | --- |
+| 1.5.0 | 2026-11-07 | [update1.5.0.md](update1.5.0.md) |
+| 1.3.1 | 2026-11-03 | [update1.3.1.md](update1.3.1.md) |
+| 1.3.0 | 2026-11-02 | [update1.3.0.md](update1.3.0.md) |
+| 1.2.1 | 2026-11-02 | [update1.2.1.md](update1.2.1.md) |
+| 1.2.0 | 2026-11-01 | [update1.2.0.md](update1.2.0.md) |
+| 1.1.0 | 2026-11-01 | [update1.1.0.md](update1.1.0.md) |
+| 1.0.1 | 2026-11-01 | [update1.0.1.md](update1.0.1.md) |
+| 1.0.0 | 2026-11-01 | [update1.0.0.md](update1.0.0.md) |
 
-构建：
+客户端启动时会检查版本信息：标为需要更新的版本会提示版本更新并给出更新说明，其余版本按提示自行选择。升级前建议备份数据目录与主密钥。
 
-```bash
-# 工具链：Flutter 3.47.9 stable + JDK 17 + Android SDK 35
-source scripts/env.sh          # JAVA_HOME / ANDROID_SDK_ROOT / PATH / Gradle 串行参数
-bash scripts/build-apk.sh      # 内含 pub get → analyze → build apk --release → 签名/产物复制
-```
+## 开源协议
 
-产物：`app/build/app/outputs/flutter-apk/app-release.apk`，发布时复制为
-`/data/dsh/home/Cocoa-v1.3.1.apk` 并上传到 GitHub Release。
-
-签名材料放在仓库外 `$COCOA_SIGN_DIR`（默认 `/data/dsh/home/.cocoa-sign/`）：`cocoa-release.jks` + `key.properties`，两者都不入库。
-
-安装：Release 页下载 APK → 允许"安装未知来源应用" → 安装后首次启动填你的服务器地址（如 `https://<你的服务器地址>`）。
-
----
-
-## 6. 部署
-
-最短路径（脚本化，SSH 密码只走环境变量）：
-
-```bash
-export COCOA_SSH_PASS='<服务器 root 密码>'
-node deploy/deploy.mjs preflight   # 只读巡检：OS/内存/磁盘/端口/已有服务/Node/防火墙
-node deploy/deploy.mjs deploy      # 打包上传 → 装 Node24 → npm ci → systemd → 冒烟
-node deploy/deploy.mjs rollback    # 回滚到 /opt/cocoa.prev（数据不回滚）
-```
-
-手工部署（服务器内）：
-
-```bash
-tar -czf /tmp/cocoa.tar.gz --exclude=node_modules --exclude=data --exclude=.git .
-scp /tmp/cocoa.tar.gz deploy/install.sh root@HOST:/tmp/
-ssh root@HOST 'bash /tmp/install.sh /tmp/cocoa.tar.gz /opt/cocoa 8787'
-```
-
-部署拓扑与全部细节（端口、systemd、防火墙、安全组、备份、回滚、升级、排障）见 **[`docs/DEPLOY.md`](docs/DEPLOY.md)**。
-
-关键约定：
-
-- 代码 `/opt/cocoa`，数据 `/opt/cocoa/data`，上一版快照 `/opt/cocoa.prev`，服务 `cocoa.service`（`Restart=always`、`MemoryMax=900M`、堆上限 512M）。
-- 默认端口 `8787`；若被占用改用 `8788` 并在客户端同步改地址（**不要 kill 占用者**）。
-- 服务器防火墙（ufw/firewalld）由安装脚本放行；**阿里云安全组需手工放行 8787/TCP**，否则公网 `curl` 会超时。
-- 首次部署后管理员初始密码写在 `/opt/cocoa/.admin-initial-password`（600），登录后请修改并删除该文件。
-
----
-
-## 7. 接入 QQ（NapCat）
-
-本仓库只提供 OneBot11 适配层，**不包含 NapCat 本体**，需自行安装（例如 Docker `mlikiowa/napcat-docker`）。配置要点：
-
-1. NapCat 网络配置 → 添加「WebSocket 客户端（反向 WS）」
-2. URL：`ws://<服务器公网 IP>:8787/onebot/ws?access_token=<ONEBOT_TOKEN>`
-3. `ONEBOT_TOKEN` 与服务端 `/opt/cocoa/.env` 中保持一致（也可在管理端「OneBot 配置」里改）
-4. 重启 NapCat 使其重连；`GET /api/admin/onebot/status` 可看连接状态
-
-消息路由：QQ 号 ↔ `users.qq`。未注册回复「账号未注册，花名册上没有主人的大名哦~」；已注册但某项配置缺失回复「<未配置项目名>还未设置哦，请前往 Cocoa 进行配置」；否则进入该用户默认角色的主会话。
-
----
-
-## 8. 常见问题（FAQ）
-
-**Q1. 端口 8787 被占用怎么办？**
-换 `8788`：改 `/opt/cocoa/.env` 的 `PORT`，`systemctl restart cocoa`，客户端地址同步改；云安全组/防火墙放行新端口。安装脚本发现端口被占用会直接失败退出，不会杀进程。
-
-**Q2. 公网 `curl http://IP:8787/api/health` 超时，但服务器内 `curl 127.0.0.1:8787` 正常？**
-云厂商安全组未放行 8787/TCP。到控制台加入站规则（TCP 8787，来源按需限制）。本机 `ufw status` 若为 inactive，说明没有主机防火墙拦截。
-
-**Q3. 启动报 `SQLITE_CANTOPEN` / `node:sqlite` 不存在？**
-Node 版本低于 22.5。`node -v` 确认，安装脚本会把 Node 24 静态包放到 `/usr/local/lib/nodejs` 并软链到 `/usr/local/bin`。
-
-**Q4. 换机器/重装后历史消息全是乱码或报解密失败？**
-`COCOA_MASTER_KEY` 变了。它必须与首次启动时一致，或恢复 `data/.masterkey` 文件。请把主密钥纳入备份。
-
-**Q5. `data/cocoa.db-wal` 很大 / 备份用什么？**
-不要直接 `cp` 正在使用的 `.db`（WAL 模式下会不一致）。用 `deploy/backup.sh`，它通过 `node:sqlite` 的 `VACUUM INTO` 做一致性快照，并打包 `vault/`、`media/`。
-
-**Q6. 升级后出问题怎么退？**
-`bash /opt/cocoa/deploy/rollback.sh`（或本机 `node deploy/deploy.mjs rollback`）。脚本把坏版本移到 `/opt/cocoa.broken-<时间戳>`，从 `/opt/cocoa.prev` 恢复代码，`data/` 与 `.env` 取最新；若回滚版本仍不健康会自动换回，避免长时间停机。
-
-**Q7. 服务器内存只有 1.7G，会不会拖垮同机的面板/机器人？**
-systemd 单元里限制了 `MemoryMax=900M`、`MemoryHigh=700M`、`NODE_OPTIONS=--max-old-space-size=512`，`Nice=5`、`CPUWeight=80`。不要在这台机器上同时跑 Flutter 构建或 `npm ci` 之类的重任务。
-
-**Q8. 构建机上 `/tmp` 只有 256M 且 noexec？**
-用 `/data` 下的路径放工具链与构建产物（`source scripts/env.sh` 已指向 `/data/dsh/home/.toolchain`）。下载的 `.tar.xz` 若系统无 `xz`，用 `scripts/install-toolchain.sh`（内置静态 busybox 解压）。
-
-**Q9. `flutter analyze` 报 error 但只是提示？**
-`error` 必须清零才能出包，`warning/info` 不阻塞。客户端代码归 app 线维护，构建线不直接改 `app/lib`。
-
-**Q10. 没有域名能用 HTTPS 吗？**
-可以先 http（客户端里关闭明文校验风险自担），或让 Nginx 用自签证书（`deploy/nginx.conf.example` 有 HTTPS 段）。有域名后更容易：Let's Encrypt + Nginx 反代，注意 `/ws`、`/onebot/` 必须透传 `Upgrade` 头。
-
----
-
-## 9. 目录结构
-
-```
-Cocoa/
-├── app/                 Flutter Android 客户端（lib/ 由客户端线维护）
-├── server/              后端
-│   ├── src/
-│   │   ├── routes/      HTTP 契约实现
-│   │   ├── services/    角色、任务、审计、设置、bootstrap
-│   │   ├── ai/          模型路由、用量、调度、提示词
-│   │   ├── realtime/    WebSocket hub
-│   │   ├── db/          schema.sql 与 node:sqlite 封装
-│   │   ├── auth/ core/ mail/ onebot/
-│   │   ├── app.js       Express 装配
-│   │   └── index.js     进程入口（HTTP + WS + 调度器）
-│   └── test/            单元与冒烟测试
-├── deploy/              install.sh、cocoa.service、deploy.mjs、backup/rollback、nginx/env 模板
-├── scripts/             env.sh（构建环境）、install-toolchain.sh、build-apk.sh
-├── docs/                API.md（契约）、DEPLOY.md（部署手册）
-├── update1.3.1.md       版本更新日志　（历史：update1.3.0.md / update1.2.1.md / update1.2.0.md …）
-└── LICENSE              GPL-3.0
-```
-
----
-
-## 10. 许可
-
-GPL-3.0（全文见 [`LICENSE`](LICENSE)）。Copyright (C) 2026 Sand Salt / takwoo258-create。
+本项目以 **GPL-3.0** 发布，全文见 [`LICENSE`](LICENSE)。Copyright (C) 2026 Sand Salt / takwoo258-create。

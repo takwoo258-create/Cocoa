@@ -10,14 +10,17 @@ import '../services/character_service.dart';
 import '../services/chat_service.dart';
 import '../services/config_service.dart';
 import '../services/media_service.dart';
+import '../services/plaza_service.dart';
 import '../services/memory_service.dart';
 import '../services/share_service.dart';
 import '../services/social_service.dart';
 import '../services/stats_service.dart';
+import '../services/template_service.dart';
 import '../services/version_service.dart';
 import 'api_client.dart';
 import 'constants.dart';
 import 'global.dart';
+import 'theme.dart';
 import 'json_utils.dart';
 import 'storage_service.dart';
 import 'ws_service.dart';
@@ -44,6 +47,8 @@ class AppState extends ChangeNotifier {
   late VersionService versionService;
   late SocialService socialService;
   late ShareService shareService;
+  late PlazaService plazaService;
+  late TemplateService templateService;
 
   User? user;
   AppConfig? config;
@@ -61,6 +66,14 @@ class AppState extends ChangeNotifier {
   VersionCheckResult? versionCheck;
   String? ignoredVersionTag;
   String? updateSnoozeDate;
+  String wallpaper = 'none';
+  String chatWallpaper = 'none';
+  String? wallpaperPath;
+  String? chatWallpaperPath;
+  String fontFamily = 'system';
+  String? fontPath;
+  double fontScale = 1.0;
+  String motion = 'normal';
   bool versionChecking = false;
   DateTime? _lastVersionCheckAt;
 
@@ -120,6 +133,90 @@ class AppState extends ChangeNotifier {
     return tag.isEmpty || tag != ignoredVersionTag;
   }
 
+  Future<void> updateAppearance({
+    String? wallpaper,
+    String? chatWallpaper,
+    String? wallpaperPath,
+    String? chatWallpaperPath,
+    String? fontFamily,
+    String? fontPath,
+    double? fontScale,
+    String? motion,
+  }) async {
+    if (wallpaper != null) this.wallpaper = wallpaper;
+    if (chatWallpaper != null) this.chatWallpaper = chatWallpaper;
+    if (wallpaperPath != null) this.wallpaperPath = wallpaperPath;
+    if (chatWallpaperPath != null) this.chatWallpaperPath = chatWallpaperPath;
+    if (fontFamily != null) this.fontFamily = fontFamily;
+    if (fontPath != null) this.fontPath = fontPath;
+    if (fontScale != null) this.fontScale = fontScale;
+    if (motion != null) this.motion = motion;
+    await storage.writeAppearance(<String, dynamic>{
+      'wallpaper': this.wallpaper,
+      'chatWallpaper': this.chatWallpaper,
+      'wallpaperPath': this.wallpaperPath,
+      'chatWallpaperPath': this.chatWallpaperPath,
+      'fontFamily': this.fontFamily,
+      'fontPath': this.fontPath,
+      'fontScale': this.fontScale,
+      'motion': this.motion,
+    });
+    notifyListeners();
+  }
+
+  /// v1.5.0：广场 WS 通知统一走顶部浮层（失败静默）。
+  void handlePlazaEvent(
+    String type,
+    Map<String, dynamic> data, {
+    VoidCallback? onOpenPlaza,
+  }) {
+    final String title = asString(data['title']);
+    switch (type) {
+      case 'plaza_used':
+        final String nickname = asString(data['nickname'], '有人');
+        final String shareId = asString(data['shareId']);
+        showToast('$nickname#$shareId 使用了你的《$title》');
+        break;
+      case 'plaza_quota':
+        final String level = asString(data['level']);
+        final int used = asInt(data['usedTokens']);
+        if (level == 'soft') {
+          final int soft = asInt(data['tokenSoft']);
+          showToast(
+            '《$title》额度已用 $used/$soft',
+            background: AppColors.warn,
+            duration: const Duration(hours: 24),
+            onTap: onOpenPlaza,
+          );
+        } else {
+          showToast(
+            '《$title》额度已用尽，服务已停止',
+            isError: true,
+            duration: const Duration(hours: 24),
+            onTap: onOpenPlaza,
+          );
+        }
+        break;
+      case 'plaza_expiring':
+        showToast('《$title》将于 ${asString(data['expiresAt'])} 到期');
+        break;
+      case 'plaza_expired':
+        showToast('《$title》已到期', isError: true);
+        break;
+      case 'plaza_banned':
+        showToast(
+          '共享广场分享权限受限：${asString(data['reason'], asString(data['message'], '请联系管理员'))}'
+          '${asString(data['until']).isEmpty ? '' : '（至 ${asString(data['until'])}）'}',
+          isError: true,
+          duration: const Duration(minutes: 30),
+          onTap: onOpenPlaza,
+        );
+        break;
+      default:
+        break;
+    }
+  }
+
   Future<void> snoozeUpdatesToday() async {
     updateSnoozeDate = _todayUtc8;
     await storage.writeUpdateSnoozeDate(updateSnoozeDate);
@@ -153,6 +250,8 @@ class AppState extends ChangeNotifier {
     versionService = VersionService(api);
     socialService = SocialService(api);
     shareService = ShareService(api);
+    plazaService = PlazaService(api);
+    templateService = TemplateService(api);
   }
 
   Future<void> boot() async {
@@ -162,6 +261,15 @@ class AppState extends ChangeNotifier {
     thinkingMode = await storage.readThinking();
     ignoredVersionTag = await storage.readIgnoredVersionTag();
     updateSnoozeDate = await storage.readUpdateSnoozeDate();
+    final Map<String, dynamic> appearance = await storage.readAppearance();
+    wallpaper = (appearance['wallpaper'] as String?) ?? 'none';
+    chatWallpaper = (appearance['chatWallpaper'] as String?) ?? 'none';
+    wallpaperPath = appearance['wallpaperPath'] as String?;
+    chatWallpaperPath = appearance['chatWallpaperPath'] as String?;
+    fontFamily = (appearance['fontFamily'] as String?) ?? 'system';
+    fontPath = appearance['fontPath'] as String?;
+    fontScale = (appearance['fontScale'] as num?)?.toDouble() ?? 1.0;
+    motion = (appearance['motion'] as String?) ?? 'normal';
     _buildApi(baseUrl, token);
 
     if (token != null && token!.isNotEmpty) {

@@ -19,10 +19,15 @@ import versionRouter from './routes/version.js';
 import sharesRouter from './routes/shares.js';
 import integrationsRouter from './routes/integrations.js';
 import configTestRouter from './routes/config-test.js';
+import plazaRouter from './routes/plaza.js';
+import templatesRouter from './routes/templates.js';
+
+const pkg = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
+  app.locals.version = pkg.version;
   app.set('trust proxy', true);
   app.use(express.json({ limit: '4mb' }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
@@ -31,7 +36,7 @@ export function createApp() {
     const started = Date.now();
     res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Share-Id, X-Timestamp, X-Nonce, X-Signature');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     res.on('finish', () => {
@@ -46,7 +51,7 @@ export function createApp() {
     res.json({
       ok: true,
       name: 'cocoa',
-      version: '1.3.1',
+      version: app.locals.version || '0.0.0',
       time: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
     });
@@ -69,6 +74,8 @@ export function createApp() {
   app.use('/api/media', mediaRouter());
   app.use('/api/version', versionRouter());
   app.use('/api/shares', sharesRouter());
+  app.use('/api/plaza', plazaRouter());
+  app.use('/api/templates', templatesRouter());
   app.use('/api/integrations', integrationsRouter());
   app.use('/onebot', onebotRouter());
   app.use('/api/onebot', onebotRouter());

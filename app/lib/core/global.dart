@@ -13,7 +13,13 @@ OverlayEntry? _toastEntry;
 Timer? _toastTimer;
 
 /// v1.0.1：顶部浮层提示（SlideTransition），错误红色、普通深色，避开键盘与 AppBar。
-void showToast(String message, {bool isError = false}) {
+void showToast(
+  String message, {
+  bool isError = false,
+  Color? background,
+  Duration? duration,
+  VoidCallback? onTap,
+}) {
   final OverlayState? overlay = appNavigatorKey.currentState?.overlay;
   if (overlay == null) {
     debugPrint('[toast] $message');
@@ -25,15 +31,19 @@ void showToast(String message, {bool isError = false}) {
     builder: (BuildContext context) => _TopToast(
       message: message,
       isError: isError,
+      background: background,
       onDismiss: hideToast,
+      onTap: onTap,
     ),
   );
   _toastEntry = entry;
   overlay.insert(entry);
-  _toastTimer = Timer(
-    Duration(milliseconds: isError ? 4200 : 2600),
-    hideToast,
-  );
+  if (duration != Duration.zero) {
+    _toastTimer = Timer(
+      duration ?? Duration(milliseconds: isError ? 4200 : 2600),
+      hideToast,
+    );
+  }
 }
 
 void hideToast() {
@@ -60,11 +70,15 @@ class _TopToast extends StatefulWidget {
     required this.message,
     required this.isError,
     required this.onDismiss,
+    this.background,
+    this.onTap,
   });
 
   final String message;
   final bool isError;
   final VoidCallback onDismiss;
+  final Color? background;
+  final VoidCallback? onTap;
 
   @override
   State<_TopToast> createState() => _TopToastState();
@@ -93,7 +107,8 @@ class _TopToastState extends State<_TopToast>
   Widget build(BuildContext context) {
     final double topInset = MediaQuery.of(context).padding.top;
     final Color bg =
-        widget.isError ? AppColors.danger : AppColors.ink.withAlpha(235);
+        widget.background ??
+        (widget.isError ? AppColors.danger : AppColors.ink.withAlpha(235));
     return Positioned(
       top: topInset + 64,
       left: 12,
@@ -109,7 +124,10 @@ class _TopToastState extends State<_TopToast>
         child: FadeTransition(
           opacity: _controller,
           child: GestureDetector(
-            onTap: widget.onDismiss,
+            onTap: () {
+              widget.onTap?.call();
+              widget.onDismiss();
+            },
             child: Material(
               color: Colors.transparent,
               child: Container(

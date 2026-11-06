@@ -5,7 +5,7 @@
  * 依赖：项目自带 ssh2（package.json dependencies），无需全局安装。
  *
  * 环境变量（不要把密码写进仓库或命令行历史）：
- *   COCOA_SSH_HOST   默认 120.26.204.70
+ *   COCOA_SSH_HOST   默认 <SERVER_IP>
  *   COCOA_SSH_PORT   默认 22
  *   COCOA_SSH_USER   默认 root
  *   COCOA_SSH_PASS   SSH 密码（二选一）
@@ -28,7 +28,7 @@ import { Client } from 'ssh2';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const CFG = {
-  sshHost: process.env.COCOA_SSH_HOST || '120.26.204.70',
+  sshHost: process.env.COCOA_SSH_HOST || '<SERVER_IP>',
   sshPort: Number(process.env.COCOA_SSH_PORT || 22),
   sshUser: process.env.COCOA_SSH_USER || 'root',
   sshPass: process.env.COCOA_SSH_PASS || '',

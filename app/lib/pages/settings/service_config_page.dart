@@ -1,18 +1,17 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_state.dart';
-import '../../core/constants.dart';
 import '../../core/global.dart';
 import '../../core/json_utils.dart';
 import '../../core/layout.dart';
 import '../../core/theme.dart';
 import '../../models/config_models.dart';
+import '../../models/model_profile.dart';
 import '../../widgets/common.dart';
-import '../../widgets/provider_editor_dialog.dart';
-import '../../widgets/service_editor.dart';
+import '../../widgets/plaza_publish_dialog.dart';
 import '../../widgets/voice_test_panel.dart';
 
-/// 服务配置二级页：统一模型来源 + 多提供源 + 各服务配置。
+/// v1.5.0：按服务分组的命名模型配置（api.profiles / api.active）。
 class ServiceConfigPage extends StatefulWidget {
   const ServiceConfigPage({super.key});
 
@@ -21,115 +20,64 @@ class ServiceConfigPage extends StatefulWidget {
 }
 
 class _ServiceConfigPageState extends State<ServiceConfigPage> {
-  List<ProviderConfig> _providers = <ProviderConfig>[];
+  Map<String, List<ModelProfile>> _profiles = <String, List<ModelProfile>>{};
+  Map<String, String> _active = <String, String>{};
   String _modelSource = 'own';
   String _systemProviderId = '';
-  Map<String, String> _active = <String, String>{};
-  bool _initialized = false;
+  bool _loading = true;
   bool _saving = false;
-  String _voiceMode = 'auto';
+
+  List<String> get _services {
+    final AppConfig? cfg = AppScope.read(context).config;
+    final List<String> list =
+        asStringList(asMap(cfg?.defaults)['services']);
+    return list.isEmpty ? kModelServiceGroups : list;
+  }
+
+  String _label(String service) {
+    final AppConfig? cfg = AppScope.read(context).config;
+    return modelServiceLabel(service, cfg?.defaults ?? <String, dynamic>{});
+  }
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadFromState());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
-  void _loadFromState() {
+  void _load() {
     final AppConfig? cfg = AppScope.read(context).config;
+    final Map<String, List<ModelProfile>> loaded =
+        <String, List<ModelProfile>>{};
+    for (final String s in _services) {
+      loaded[s] = List<ModelProfile>.of(cfg?.profiles[s] ?? const <ModelProfile>[]);
+    }
     setState(() {
-      _providers = List<ProviderConfig>.of(cfg?.providers ?? const <ProviderConfig>[]);
-      final bool systemEnabled = cfg?.systemModels.enabled ?? false;
-      _modelSource = systemEnabled ? (cfg?.modelSource ?? 'own') : 'own';
+      _profiles = loaded;
+      _active = Map<String, String>.of(cfg?.active ?? const <String, String>{});
+      _modelSource = cfg?.modelSource ?? 'own';
       _systemProviderId = cfg?.systemProviderId ?? '';
-      _active = Map<String, String>.of(
-        cfg?.activeProviderId ?? const <String, String>{},
-      );
-      _voiceMode = cfg?.voiceReplyMode ?? 'auto';
-      _initialized = true;
+      _loading = false;
     });
   }
 
-  bool _ready(AppState state, String service) {
-    final ServiceConfig cfg =
-        state.config?.service(service) ?? ServiceConfig.empty;
-    switch (service) {
-      case 'chat':
-        return state.chatReady;
-      case 'embedding':
-        return state.embeddingReady;
-      case 'stt':
-        return state.config?.readyStt ?? false;
-      case 'tts':
-        return state.config?.readyTts ?? false;
-      default:
-        return cfg.configured;
-    }
+  void _setLocal(String service, List<ModelProfile> list) {
+    setState(() => _profiles[service] = list);
   }
 
-  Future<void> _saveVoiceMode(String mode) async {
-    final AppState state = AppScope.read(context);
-    setState(() => _voiceMode = mode);
-    try {
-      await state.configService.savePreferences(<String, dynamic>{
-        'voiceReplyMode': mode,
-      });
-      await state.refreshConfig();
-      if (mounted) showToast('语音回复设置已保存');
-    } catch (e) {
-      if (mounted) showToast('保存失败：$e', isError: true);
-    }
-  }
-
-  Widget _voiceReplyCard() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.sand.withAlpha(90),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        children: <Widget>[
-          const Icon(Icons.record_voice_over_outlined, size: 17),
-          const SizedBox(width: 8),
-          const Expanded(
-            child: Text(
-              '语音回复',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-            ),
-          ),
-          DropdownButton<String>(
-            value: _voiceMode,
-            underline: const SizedBox.shrink(),
-            style: const TextStyle(fontSize: 12, color: AppColors.ink),
-            items: const <DropdownMenuItem<String>>[
-              DropdownMenuItem<String>(value: 'auto', child: Text('仅语音消息')),
-              DropdownMenuItem<String>(value: 'always', child: Text('始终发送语音')),
-              DropdownMenuItem<String>(value: 'off', child: Text('关闭')),
-            ],
-            onChanged: (String? value) {
-              if (value != null) _saveVoiceMode(value);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _saveSources() async {
+  Future<void> _saveGroup(String service) async {
     final AppState state = AppScope.read(context);
     setState(() => _saving = true);
     try {
-      await state.configService.saveModelConfig(
-        modelSource: _modelSource,
-        systemProviderId: _systemProviderId,
-        providers: _providers.map((ProviderConfig p) => p.toJson()).toList(),
-        activeProviderId: _active,
+      await state.configService.saveProfiles(
+        profiles: <String, List<ModelProfile>>{
+          service: _profiles[service] ?? <ModelProfile>[],
+        },
+        active: <String, String>{service: _active[service] ?? ''},
       );
       await state.refreshConfig();
-      if (mounted) showToast('模型来源已保存');
-      _loadFromState();
+      _load();
+      if (mounted) showToast('${_label(service)}已保存');
     } catch (e) {
       if (mounted) showToast('保存失败：$e', isError: true);
     } finally {
@@ -137,42 +85,381 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
     }
   }
 
-  Future<void> _editProvider([ProviderConfig? initial]) async {
-    final Map<String, dynamic>? data =
-        await showProviderEditor(context, initial: initial);
-    if (data == null || !mounted) return;
-    final ProviderConfig p = ProviderConfig(
-      id: asString(data['id']),
-      name: asString(data['name']),
-      baseUrl: asString(data['baseUrl']),
-      apiKey: asString(data['apiKey']),
-      apiKeySet: asString(data['apiKey']).isNotEmpty,
-      models: asStringMap(data['models']),
-      services: asStringMap(data['models']).keys.toList(),
-    );
-    setState(() {
-      final int idx = _providers.indexWhere((ProviderConfig x) => x.id == p.id);
-      if (idx >= 0) {
-        _providers[idx] = p;
-      } else {
-        _providers.add(p);
+  Future<void> _setActive(String service, String id) async {
+    final AppState state = AppScope.read(context);
+    setState(() => _active[service] = id);
+    try {
+      await state.configService.saveProfiles(
+        active: <String, String>{service: id},
+      );
+      await state.refreshConfig();
+      if (mounted) {
+        setState(() {
+          _active[service] = state.config?.active[service] ?? id;
+        });
       }
-    });
+    } catch (e) {
+      if (mounted) showToast('切换失败：$e', isError: true);
+    }
   }
 
-  Future<void> _deleteProvider(ProviderConfig p) async {
+  Future<void> _saveSource() async {
+    final AppState state = AppScope.read(context);
+    setState(() => _saving = true);
+    try {
+      await state.configService.saveProfiles(
+        modelSource: _modelSource,
+        systemProviderId: _modelSource == 'system' ? _systemProviderId : '',
+      );
+      await state.refreshConfig();
+      _load();
+      if (mounted) showToast('模型来源已保存');
+    } catch (e) {
+      if (mounted) showToast('保存失败：$e', isError: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _test(String service, ModelProfile p) async {
+    final AppState state = AppScope.read(context);
+    showToast('正在测试 ${p.name}…');
+    final Map<String, dynamic> r = await state.configService.testProfileConfig(
+      service: service,
+      profileId: p.id.isNotEmpty ? p.id : null,
+      baseUrl: p.id.isEmpty ? p.baseUrl : null,
+      apiKey: p.id.isEmpty ? p.apiKey : null,
+      model: p.model,
+    );
+    if (!mounted) return;
+    final bool ok = asBool(r['ok']);
+    showToast(
+      ok
+          ? '连接成功${asInt(r['latencyMs']) > 0 ? ' · ${asInt(r['latencyMs'])}ms' : ''}'
+          : '连接失败：${asString(r['detail'], '未知错误')}',
+      isError: !ok,
+    );
+  }
+
+  Future<void> _delete(String service, ModelProfile p) async {
     final bool ok = await confirmDialog(
       context,
-      title: '删除提供源',
-      message: '确定删除「${p.name}」吗？使用它的服务会回退到默认来源。',
+      title: '删除配置',
+      message: '确定删除「${p.name}」吗？',
       confirmText: '删除',
       danger: true,
     );
     if (!ok) return;
-    setState(() {
-      _providers.removeWhere((ProviderConfig x) => x.id == p.id);
-      _active.removeWhere((String _, String v) => v == p.id);
-    });
+    final List<ModelProfile> list = List<ModelProfile>.of(
+      _profiles[service] ?? const <ModelProfile>[],
+    )..removeWhere((ModelProfile x) => x.id == p.id);
+    _setLocal(service, list);
+    if (_active[service] == p.id) _active[service] = '';
+    await _saveGroup(service);
+  }
+
+  Future<void> _copy(String service, ModelProfile p) async {
+    final List<ModelProfile> list = List<ModelProfile>.of(
+      _profiles[service] ?? const <ModelProfile>[],
+    )..add(ModelProfile(
+        name: '${p.name} 副本',
+        baseUrl: p.baseUrl,
+        apiKey: '',
+        model: p.model,
+        voice: p.voice,
+        contextWindow: p.contextWindow,
+      ));
+    _setLocal(service, list);
+    await _saveGroup(service);
+  }
+
+  Future<void> _edit(String service, [ModelProfile? initial]) async {
+    final ModelProfile? result = await _showEditor(service, initial);
+    if (result == null || !mounted) return;
+    final List<ModelProfile> list = List<ModelProfile>.of(
+      _profiles[service] ?? const <ModelProfile>[],
+    );
+    final int idx = list.indexWhere((ModelProfile x) => x.id == result.id);
+    if (initial == null || result.id.isEmpty) {
+      list.add(result);
+    } else if (idx >= 0) {
+      list[idx] = result;
+    } else {
+      list.add(result);
+    }
+    _setLocal(service, list);
+    await _saveGroup(service);
+  }
+
+  Future<ModelProfile?> _showEditor(
+    String service,
+    ModelProfile? initial,
+  ) async {
+    final AppState state = AppScope.read(context);
+    final TextEditingController name =
+        TextEditingController(text: initial?.name ?? '');
+    final TextEditingController baseUrl =
+        TextEditingController(text: initial?.baseUrl ?? '');
+    final TextEditingController apiKey = TextEditingController();
+    final TextEditingController model =
+        TextEditingController(text: initial?.model ?? '');
+    final TextEditingController voice =
+        TextEditingController(text: initial?.voice ?? '');
+    final TextEditingController contextCtrl = TextEditingController(
+      text: (initial?.contextWindow ?? 0) > 0
+          ? '${initial!.contextWindow}'
+          : '',
+    );
+    bool clearKey = false;
+    bool busy = false;
+    String status = '';
+
+    Future<ModelListResult?> fetchModels(StateSetter setSt) async {
+      setSt(() => busy = true);
+      try {
+        final ModelListResult res =
+            await state.configService.listProfileModels(
+          service: service,
+          profileId: initial?.id.isNotEmpty == true ? initial!.id : null,
+          baseUrl: initial?.id.isNotEmpty == true ? null : baseUrl.text.trim(),
+          apiKey: initial?.id.isNotEmpty == true
+              ? null
+              : (apiKey.text.trim().isEmpty ? null : apiKey.text.trim()),
+          model: model.text.trim(),
+        );
+        return res;
+      } catch (e) {
+        setSt(() => status = '获取模型失败：$e');
+        return null;
+      } finally {
+        setSt(() => busy = false);
+      }
+    }
+
+    Future<void> pickModel(StateSetter setSt) async {
+      final ModelListResult? res = await fetchModels(setSt);
+      if (res == null) return;
+      if (res.models.isEmpty) {
+        setSt(() => status = res.warning.isEmpty ? '没有获取到模型' : res.warning);
+        return;
+      }
+      final ModelInfo? picked = await showModalBottomSheet<ModelInfo>(
+        context: context,
+        builder: (BuildContext ctx) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: res.models
+                .map(
+                  (ModelInfo m) => ListTile(
+                    title: Text(m.id, style: const TextStyle(fontSize: 13)),
+                    subtitle: Text(
+                      m.contextWindow > 0 ? '上下文 ${m.contextWindow}' : '上下文未知',
+                      style: const TextStyle(fontSize: 10.5),
+                    ),
+                    onTap: () => Navigator.of(ctx).pop(m),
+                  ),
+                )
+                .toList(),
+          ),
+        ),
+      );
+      if (picked == null) return;
+      model.text = picked.id;
+      if (picked.contextWindow > 0) {
+        contextCtrl.text = '${picked.contextWindow}';
+      }
+      setSt(() {});
+      // 已保存配置：模型列表返回的 contextWindow 立即写回该条配置并保存。
+      if (initial?.id.isNotEmpty == true && picked.contextWindow > 0) {
+        final ModelProfile updated = initial!.copyWith(
+          model: picked.id,
+          contextWindow: picked.contextWindow,
+        );
+        final List<ModelProfile> list = List<ModelProfile>.of(
+          _profiles[service] ?? const <ModelProfile>[],
+        );
+        final int idx = list.indexWhere((ModelProfile x) => x.id == updated.id);
+        if (idx >= 0) {
+          list[idx] = updated;
+          _setLocal(service, list);
+          await _saveGroup(service);
+        }
+      }
+    }
+
+    Future<void> test(StateSetter setSt) async {
+      setSt(() => busy = true);
+      final Map<String, dynamic> r =
+          await state.configService.testProfileConfig(
+        service: service,
+        profileId: initial?.id.isNotEmpty == true ? initial!.id : null,
+        baseUrl: initial?.id.isNotEmpty == true ? null : baseUrl.text.trim(),
+        apiKey: initial?.id.isNotEmpty == true
+            ? null
+            : (apiKey.text.trim().isEmpty ? null : apiKey.text.trim()),
+        model: model.text.trim(),
+      );
+      setSt(() {
+        busy = false;
+        final bool ok = asBool(r['ok']);
+        status = ok
+            ? '连接成功${asInt(r['latencyMs']) > 0 ? ' · ${asInt(r['latencyMs'])}ms' : ''}'
+            : '连接失败：${asString(r['detail'], '未知错误')}';
+      });
+    }
+
+    final ModelProfile? result = await showDialog<ModelProfile>(
+      context: context,
+      builder: (BuildContext ctx) => StatefulBuilder(
+        builder: (BuildContext ctx, StateSetter setSt) => AlertDialog(
+          title: Text(initial == null ? '新建${_label(service)}' : '编辑配置'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: '配置名称'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: baseUrl,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(labelText: 'BaseURL'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: apiKey,
+                    obscureText: true,
+                    enabled: !clearKey,
+                    decoration: InputDecoration(
+                      labelText: 'API Key',
+                      hintText: (initial?.apiKeySet ?? false)
+                          ? '已设置，留空保持'
+                          : 'sk-...',
+                    ),
+                  ),
+                  Row(
+                    children: <Widget>[
+                      TextButton(
+                        onPressed: () => setSt(() => clearKey = !clearKey),
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(0, 28),
+                          textStyle: const TextStyle(fontSize: 10.5),
+                        ),
+                        child: Text(clearKey ? '取消清空' : '清空已保存密钥'),
+                      ),
+                      if (clearKey)
+                        const Text(
+                          '保存后将清空密钥',
+                          style: TextStyle(fontSize: 10, color: AppColors.danger),
+                        ),
+                    ],
+                  ),
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: TextField(
+                          controller: model,
+                          decoration: const InputDecoration(labelText: '模型名'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: busy ? null : () => pickModel(setSt),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(0, 42),
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          textStyle: const TextStyle(fontSize: 11),
+                        ),
+                        child: const Text('获取模型列表'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: contextCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '上下文窗口（token，模型列表自动写入）',
+                    ),
+                  ),
+                  if (service == 'tts')
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: TextField(
+                        controller: voice,
+                        decoration: const InputDecoration(labelText: '音色 voice'),
+                      ),
+                    ),
+                  if (status.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        status,
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          color: AppColors.cocoa,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: busy ? null : () => test(setSt),
+              child: const Text('测试连接'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: busy
+                  ? null
+                  : () {
+                      if (name.text.trim().isEmpty ||
+                          baseUrl.text.trim().isEmpty ||
+                          model.text.trim().isEmpty) {
+                        setSt(() => status = '请填写名称、BaseURL 与模型名');
+                        return;
+                      }
+                      final String typedKey = apiKey.text.trim();
+                      Navigator.of(ctx).pop(ModelProfile(
+                        id: initial?.id ?? '',
+                        name: name.text.trim(),
+                        baseUrl: baseUrl.text.trim(),
+                        apiKey: clearKey
+                            ? ''
+                            : (typedKey.isNotEmpty
+                                ? typedKey
+                                : ((initial?.apiKeySet ?? false) ? '****' : '')),
+                        apiKeySet: !clearKey &&
+                            (typedKey.isNotEmpty || (initial?.apiKeySet ?? false)),
+                        model: model.text.trim(),
+                        voice: voice.text.trim(),
+                        contextWindow: int.tryParse(contextCtrl.text.trim()) ?? 0,
+                        ready: initial?.ready ?? false,
+                      ));
+                    },
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    baseUrl.dispose();
+    apiKey.dispose();
+    model.dispose();
+    voice.dispose();
+    contextCtrl.dispose();
+    return result;
   }
 
   Widget _sourceCard(AppState state) {
@@ -180,13 +467,12 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
     return SectionCard(
       title: '模型来源',
       trailing: TextButton(
-        onPressed: _saving ? null : _saveSources,
+        onPressed: _saving ? null : _saveSource,
         style: TextButton.styleFrom(
           minimumSize: const Size(0, 28),
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          textStyle: const TextStyle(fontSize: 11.5),
+          textStyle: const TextStyle(fontSize: 11),
         ),
-        child: Text(_saving ? '保存中…' : '保存来源'),
+        child: const Text('保存来源'),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -194,336 +480,225 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
           if (sys.enabled)
             SegmentedButton<String>(
               segments: const <ButtonSegment<String>>[
-                ButtonSegment<String>(
-                  value: 'system',
-                  label: Text('使用系统模型'),
-                ),
-                ButtonSegment<String>(
-                  value: 'own',
-                  label: Text('使用自己的模型'),
-                ),
+                ButtonSegment<String>(value: 'own', label: Text('使用自己的模型')),
+                ButtonSegment<String>(value: 'system', label: Text('使用系统模型')),
               ],
               selected: <String>{_modelSource},
               onSelectionChanged: (Set<String> v) =>
                   setState(() => _modelSource = v.first),
             ),
-          if (sys.enabled) ...<Widget>[
-            const SizedBox(height: 8),
-            const Text(
-              '系统统一模型（点击选择）',
-              style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
-            ),
+          if (sys.enabled && _modelSource == 'system') ...<Widget>[
+            const SizedBox(height: 6),
             Wrap(
-              spacing: 8,
-              runSpacing: 8,
+              spacing: 6,
               children: sys.providers
                   .map(
                     (ProviderConfig p) => ChoiceChip(
                       label: Text(
-                        '${p.name}\n${p.servicesLabel}',
+                        '${p.name} · ${p.servicesLabel}',
                         style: const TextStyle(fontSize: 10.5),
                       ),
-                      selected: _modelSource == 'system' &&
-                          _systemProviderId == p.id,
-                      onSelected: (_) => setState(() {
-                        _systemProviderId = p.id;
-                        _modelSource = 'system';
-                      }),
+                      selected: _systemProviderId == p.id,
+                      onSelected: (_) =>
+                          setState(() => _systemProviderId = p.id),
                     ),
                   )
                   .toList(),
             ),
           ],
-          if (!sys.enabled || _modelSource == 'own') ...<Widget>[
-            const SizedBox(height: 6),
-            Row(
-              children: <Widget>[
-                const Expanded(
-                  child: Text(
-                    '我的提供源（可配置多个）',
-                    style: TextStyle(fontSize: 11.5),
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: () => _editProvider(),
-                  icon: const Icon(Icons.add, size: 15),
-                  label: const Text(
-                    '新增提供源',
-                    style: TextStyle(fontSize: 11),
-                  ),
-                  style: TextButton.styleFrom(
-                    minimumSize: const Size(0, 30),
-                  ),
-                ),
-              ],
-            ),
-            if (_providers.isEmpty)
-              const Text(
-                '还没有自己的提供源；新增后可在这里按服务选择。',
-                style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
-              ),
-            ..._providers.map(
-              (ProviderConfig p) => Container(
-                margin: const EdgeInsets.only(top: 6),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppColors.cream,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppColors.sand),
-                ),
-                child: Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            p.name.isEmpty ? p.id : p.name,
-                            style: const TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          Text(
-                            '${p.baseUrl} · ${p.servicesLabel}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: AppColors.inkSoft,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.edit_outlined, size: 17),
-                      onPressed: () => _editProvider(p),
-                    ),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.delete_outline, size: 17),
-                      onPressed: () => _deleteProvider(p),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+          const SizedBox(height: 4),
+          const Text(
+            '服务之间互不影响；切换某个服务的当前配置只更新该服务的 active。',
+            style: TextStyle(fontSize: 10, color: AppColors.inkSoft),
+          ),
         ],
       ),
     );
   }
 
-  Widget _activeCard(AppState state) {
-    if (_providers.isEmpty) return const SizedBox.shrink();
-    if (_modelSource == 'system' && (state.config?.systemModels.enabled ?? false)) {
-      return const SizedBox.shrink();
+  Future<void> _publish(String service, ModelProfile p) async {
+    final AppState state = AppScope.read(context);
+    if (_active[service] != p.id) {
+      await _setActive(service, p.id);
     }
-    return SectionCard(
-      title: '按服务选择提供源',
+    final Map<String, dynamic>? form = await showPlazaPublishDialog(
+      context,
+      kind: 'model',
+      title: p.name,
+    );
+    if (form == null) return;
+    try {
+      await state.plazaService.publish(<String, dynamic>{
+        'kind': 'model',
+        'services': <String>[service],
+        ...form,
+      }, global: false);
+      if (mounted) showToast('模型使用权已发布到本服广场');
+    } catch (e) {
+      showToast('发布失败：$e', isError: true);
+    }
+  }
+
+  Widget _profileCard(String service, ModelProfile p) {
+    final ProviderMeta? meta =
+        AppScope.read(context).config?.providerMeta[service];
+    final bool active = _active[service] == p.id;
+    final bool shared = meta?.source == 'shared' && active;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: active ? AppColors.cocoa.withAlpha(12) : AppColors.cream,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: active ? AppColors.cocoa.withAlpha(130) : AppColors.sand,
+        ),
+      ),
       child: Column(
-        children: kServices.map((String service) {
-          final String value =
-              _providers.any((ProviderConfig p) => p.id == _active[service])
-                  ? _active[service]!
-                  : '';
-          return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
             children: <Widget>[
-              SizedBox(
-                width: 96,
-                child: Text(
-                  kServiceLabels[service] ?? service,
-                  style: const TextStyle(fontSize: 11.5),
+              IconButton(
+                tooltip: active ? '当前生效' : '设为当前生效',
+                icon: Icon(
+                  active
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_unchecked,
+                  size: 18,
+                  color: active ? AppColors.cocoa : AppColors.inkSoft,
                 ),
+                onPressed: p.id.isEmpty ? null : () => _setActive(service, p.id),
               ),
               Expanded(
-                child: DropdownButton<String>(
-                  isExpanded: true,
-                  value: value,
-                  hint: const Text('默认（使用上方服务配置）',
-                      style: TextStyle(fontSize: 11)),
-                  items: <DropdownMenuItem<String>>[
-                    const DropdownMenuItem<String>(
-                      value: '',
-                      child: Text('默认', style: TextStyle(fontSize: 11.5)),
-                    ),
-                    ..._providers.map(
-                      (ProviderConfig p) => DropdownMenuItem<String>(
-                        value: p.id,
-                        child: Text(
-                          p.models[service]?.isNotEmpty == true
-                              ? '${p.name} · ${p.models[service]}'
-                              : p.name,
-                          style: const TextStyle(fontSize: 11.5),
-                        ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      p.name.isEmpty ? p.id : p.name,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
+                    Text(
+                      '${p.model}${p.contextWindow > 0 ? ' · ${p.contextWindow} token' : ''}',
+                      style: const TextStyle(fontSize: 10.5),
+                    ),
+                    Text(
+                      '${p.baseUrl} · 密钥${p.apiKeySet ? '已设置' : '未设置'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 9.5,
+                        color: AppColors.inkSoft,
+                      ),
+                    ),
+                    if (shared)
+                      Text(
+                        '来自分享：${meta?.profileName ?? meta?.providerName ?? ''}',
+                        style: const TextStyle(
+                          fontSize: 9.5,
+                          color: AppColors.rose,
+                        ),
+                      ),
                   ],
-                  onChanged: (String? v) {
-                    setState(() {
-                      if (v == null || v.isEmpty) {
-                        _active.remove(service);
-                      } else {
-                        _active[service] = v;
-                      }
-                    });
-                  },
                 ),
               ),
+              if (p.ready)
+                const Icon(Icons.check_circle, size: 14, color: AppColors.success),
             ],
-          );
-        }).toList(),
+          ),
+          Row(
+            children: <Widget>[
+              TextButton(
+                onPressed: () => _test(service, p),
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 28),
+                  textStyle: const TextStyle(fontSize: 10.5),
+                ),
+                child: const Text('测试连接'),
+              ),
+              TextButton(
+                onPressed: () => _publish(service, p),
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 28),
+                  textStyle: const TextStyle(fontSize: 10.5),
+                ),
+                child: const Text('公开使用权'),
+              ),
+              const Spacer(),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.copy_outlined, size: 15),
+                onPressed: () => _copy(service, p),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.edit_outlined, size: 16),
+                onPressed: () => _edit(service, p),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.delete_outline, size: 16),
+                onPressed: () => _delete(service, p),
+              ),
+            ],
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _groupCard(String service) {
+    final List<ModelProfile> list =
+        _profiles[service] ?? const <ModelProfile>[];
+    return SectionCard(
+      title: _label(service),
+      trailing: IconButton(
+        tooltip: '新建配置',
+        icon: const Icon(Icons.add_circle_outline, size: 19),
+        onPressed: () => _edit(service),
+      ),
+      child: list.isEmpty
+          ? const Text(
+              '暂无配置；点击右上角新建，每条配置独立保存地址、密钥、模型与上下文。',
+              style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+            )
+          : Column(
+              children: list
+                  .map((ModelProfile p) => _profileCard(service, p))
+                  .toList(),
+            ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final AppState state = AppScope.of(context);
-    if (!_initialized) {
+    if (_loading) {
       return Scaffold(
-        appBar: AppBar(title: const Text('服务配置')),
+        appBar: AppBar(title: const Text('模型配置')),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('服务配置'),
-        actions: <Widget>[
-          IconButton(
-            tooltip: '刷新',
-            icon: const Icon(Icons.refresh, size: 20),
-            onPressed: () async {
-              await state.refreshConfig();
-              if (mounted) _loadFromState();
-            },
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('模型配置')),
       body: ListView(
         padding: pagePadding(context),
         children: <Widget>[
-          if (!state.chatReady)
-            Container(
-              margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.warn.withAlpha(24),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.warn.withAlpha(90)),
-              ),
-              child: const Text(
-                '对话模型未配置：可选择系统统一模型，或填写自己的提供源与服务配置。',
-                style: TextStyle(fontSize: 11.5, color: AppColors.warn),
-              ),
-            ),
           _sourceCard(state),
-          _activeCard(state),
-          ...kServices.map((String service) {
-            final ServiceConfig cfg =
-                state.config?.service(service) ?? ServiceConfig.empty;
-            final bool ready = _ready(state, service);
-            final ProviderMeta? meta = state.config?.providerMeta[service];
-            final Map<String, dynamic> shared =
-                asMap(asMap(state.config?.shared)[service]);
-            return Container(
-              margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              decoration: BoxDecoration(
-                color: AppColors.white,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.sand),
-              ),
-              child: ExpansionTile(
-                shape: const Border(),
-                collapsedShape: const Border(),
-                tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-                title: Row(
-                  children: <Widget>[
-                    Text(
-                      kServiceLabels[service] ?? service,
-                      style: const TextStyle(fontSize: 13.5),
-                    ),
-                    const SizedBox(width: 6),
-                    Icon(
-                      ready ? Icons.check_circle : Icons.radio_button_unchecked,
-                      size: 12,
-                      color: ready ? AppColors.success : AppColors.inkSoft,
-                    ),
-                    const Spacer(),
-                    Flexible(
-                      child: Text(
-                        meta?.label.isNotEmpty == true
-                            ? meta!.label
-                            : (shared.isNotEmpty && !ready
-                                ? '来自分享'
-                                : (cfg.model.isEmpty ? '未设置模型' : cfg.model)),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: meta?.label.isNotEmpty == true
-                              ? AppColors.rose
-                              : (shared.isNotEmpty && !ready
-                                  ? AppColors.rose
-                                  : AppColors.inkSoft),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                children: <Widget>[
-                  if (shared.isNotEmpty)
-                    Container(
-                      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: AppColors.rose.withAlpha(18),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: AppColors.rose.withAlpha(80),
-                        ),
-                      ),
-                      child: Text(
-                        '共享来源：#${asInt(shared['ownerCode'])} '
-                        '${asString(shared['ownerNickname'])}'
-                        '${asString(shared['expiresAt']).isEmpty ? '' : ' · 到期 ${asString(shared['expiresAt'])}'}'
-                        '${asString(shared['model']).isEmpty ? '' : ' · 模型 ${asString(shared['model'])}'}'
-                        '${ready ? '' : '（未自行配置时自动使用）'}',
-                        style: const TextStyle(
-                          fontSize: 10.5,
-                          color: AppColors.cocoa,
-                          height: 1.5,
-                        ),
-                      ),
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                    child: Column(
-                      children: <Widget>[
-                        if (service == 'tts') _voiceReplyCard(),
-                        if (service == 'tts' || service == 'stt')
-                          VoiceTestPanel(service: service),
-                        ServiceEditor(
-                          state: state,
-                          service: service,
-                          showVoice: service == 'tts',
-                        ),
-                      ],
-                    ),
-                  ),
+          ..._services.map(_groupCard),
+          if (_services.contains('tts') || _services.contains('stt'))
+            SectionCard(
+              title: '语音测试',
+              child: Column(
+                children: const <Widget>[
+                  VoiceTestPanel(service: 'tts'),
+                  VoiceTestPanel(service: 'stt'),
                 ],
               ),
-            );
-          }),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 14, 16, 0),
-            child: Text(
-              '网页搜索 / 抓取复用 DeepSeek；系统统一模型启用时可一键使用，也可配置多个自己的提供源并按服务选择。',
-              style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
             ),
-          ),
         ],
       ),
     );

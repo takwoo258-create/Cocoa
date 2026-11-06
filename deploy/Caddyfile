@@ -1,7 +1,7 @@
 # Cocoa 反向代理（Caddy，自动 HTTPS）
 #
 # 部署：deploy/caddy-setup.sh 会把本文件安装到 /etc/caddy/Caddyfile
-# 域名：120-26-204-70.sslip.io（sslip.io 泛解析 → 120.26.204.70）
+# 域名：<DOMAIN>（sslip.io 泛解析 → <SERVER_IP>）
 #
 # 说明：
 #   * Caddy 自动向 Let's Encrypt 申请证书，HTTP(80) 自动 301 到 HTTPS(443)
@@ -15,7 +15,7 @@
 	renewal_window_ratio 0.34
 }
 
-120-26-204-70.sslip.io {
+<DOMAIN> {
 	encode zstd gzip
 
 	# 所有 API / WebSocket 请求交给 Cocoa 后端
@@ -40,5 +40,5 @@
 
 # 兜底：直接用 IP 或其它域名访问 80/443 时也转到 HTTPS 域名
 :80 {
-	redir https://120-26-204-70.sslip.io{uri} permanent
+	redir https://<DOMAIN>{uri} permanent
 }

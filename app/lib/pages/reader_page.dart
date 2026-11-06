@@ -75,6 +75,27 @@ class ReaderPage extends StatelessWidget {
                     '已加密',
                     style: TextStyle(fontSize: 10, color: AppColors.rose),
                   ),
+                if (book.words > 0) ...<Widget>[
+                  const SizedBox(width: 10),
+                  Text(
+                    '${book.words} 字',
+                    style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
+                  ),
+                ],
+                if (book.chapter > 0) ...<Widget>[
+                  const SizedBox(width: 10),
+                  Text(
+                    '第 ${book.chapter} 章',
+                    style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
+                  ),
+                ],
+                if (book.type == 'essay') ...<Widget>[
+                  const SizedBox(width: 10),
+                  const Text(
+                    '独立成篇',
+                    style: TextStyle(fontSize: 10, color: AppColors.rose),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 16),

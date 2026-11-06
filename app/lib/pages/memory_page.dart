@@ -470,6 +470,8 @@ class _MemoryPageState extends State<MemoryPage> {
       builder: (BuildContext ctx, BoxConstraints c) {
         final Size size = Size(c.maxWidth, c.maxHeight);
         final Map<String, _Vec3> coords = _coords3D(visible);
+        final double pulse =
+            math.sin(DateTime.now().millisecondsSinceEpoch / 620);
         final Map<String, _P3> projected = <String, _P3>{};
         coords.forEach((String id, _Vec3 v) {
           projected[id] = _project(v, size);
@@ -517,6 +519,7 @@ class _MemoryPageState extends State<MemoryPage> {
                       visible: visible,
                       links: links,
                       selectedId: _selectedId,
+                      pulse: pulse,
                     ),
                   ),
                 ),
@@ -760,11 +763,25 @@ class _MemoryPageState extends State<MemoryPage> {
         base.z + math.sin(a) * math.cos(e) * r,
       );
     }
+    // 后端提供按图质心居中的稳定坐标，直接使用，不再按 id 自算。
     for (final MemoryNode n in visible.values) {
-      if (out.containsKey(n.id)) continue;
-      final double a = _hash01(n.id, 9) * 2 * math.pi;
-      final double r = 120 + _hash01(n.id, 10) * 90;
-      out[n.id] = _Vec3(math.cos(a) * r, 0, math.sin(a) * r);
+      out[n.id] = _Vec3(n.x, n.y, n.z);
+    }
+    if (out.isNotEmpty) {
+      double cx = 0, cy = 0, cz = 0;
+      for (final _Vec3 v in out.values) {
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+      }
+      cx /= out.length;
+      cy /= out.length;
+      cz /= out.length;
+      // 旋转中心改为图质心，而不是角色节点。
+      return out.map((String id, _Vec3 v) => MapEntry<String, _Vec3>(
+            id,
+            _Vec3(v.x - cx, v.y - cy, v.z - cz),
+          ));
     }
     return out;
   }
@@ -834,12 +851,14 @@ class _Memory3DPainter extends CustomPainter {
     required this.visible,
     required this.links,
     this.selectedId,
+    this.pulse = 0,
   });
 
   final Map<String, _P3> projected;
   final Map<String, MemoryNode> visible;
   final List<MemoryLink> links;
   final String? selectedId;
+  final double pulse;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -868,8 +887,13 @@ class _Memory3DPainter extends CustomPainter {
       if (p == null) continue;
       final bool selected = node.id == selectedId;
       if (node.isMemory) {
-        final double br = node.effectiveBrightness.clamp(0.12, 1.0);
-        final double r = (2.4 + br * 2.4) * p.scale.clamp(0.5, 1.8);
+        final double br = (node.glow > 0 ? node.glow : node.effectiveBrightness)
+            .clamp(0.12, 1.0);
+        final double phase = math.sin(
+          DateTime.now().millisecondsSinceEpoch / 620 + node.seed * 0.7,
+        );
+        final double r = (2.4 + br * 2.4 + phase * 0.5) *
+            p.scale.clamp(0.5, 1.8);
         canvas.drawCircle(
           p.pos,
           r * 3.6,
@@ -885,13 +909,13 @@ class _Memory3DPainter extends CustomPainter {
         );
       } else {
         final bool agent = node.isAgent;
-        final double base = agent ? 7 : 5;
+        final double base = (agent ? 7 : 5) + node.level * 0.4;
         final Color glow = agent ? const Color(0xFFFFB7C5) : const Color(0xFF9CCBFF);
         canvas.drawCircle(
           p.pos,
           base * 4.6 * p.scale.clamp(0.6, 1.6),
           Paint()
-            ..color = glow.withAlpha(agent ? 70 : 40)
+            ..color = glow.withAlpha(agent ? (62 + pulse * 18).round() : (36 + pulse * 12).round())
             ..maskFilter = MaskFilter.blur(BlurStyle.normal, agent ? 16 : 10),
         );
         canvas.drawCircle(p.pos, base, Paint()..color = glow);

@@ -83,6 +83,7 @@ class ApiClient {
   Future<dynamic> _run(
     Future<http.Response> Function() send, {
     bool silent = false,
+    bool logoutOn401 = true,
   }) async {
     http.Response res;
     try {
@@ -122,7 +123,7 @@ class ApiClient {
       message = body;
     }
 
-    if (res.statusCode == 401) {
+    if (res.statusCode == 401 && logoutOn401) {
       onUnauthorized?.call();
     }
     if (!silent) onError?.call(message);
@@ -145,6 +146,7 @@ class ApiClient {
     Object? body,
     Map<String, dynamic>? query,
     bool silent = false,
+    bool logoutOn401 = true,
   }) {
     return _run(
       () => http.post(
@@ -153,6 +155,7 @@ class ApiClient {
         body: body == null ? '{}' : jsonEncode(body),
       ),
       silent: silent,
+      logoutOn401: logoutOn401,
     );
   }
 

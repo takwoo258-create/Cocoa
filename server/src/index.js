@@ -30,6 +30,14 @@ try {
   logger.warn('分享到期巡检未就绪', err.message);
 }
 
+// v1.5.0 共享广场：额度 / 到期巡检（60s）
+try {
+  const { startPlazaWatcher } = await import('./services/plaza.js');
+  startPlazaWatcher();
+} catch (err) {
+  logger.warn('共享广场巡检未就绪', err.message);
+}
+
 // v1.2.0 后端自动升级巡检（启动一次 + 每 6 小时）
 try {
   const { maybeAutoUpgrade } = await import('./services/upgrade.js');

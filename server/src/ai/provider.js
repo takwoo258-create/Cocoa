@@ -121,10 +121,12 @@ export async function chatText(userId, opts = {}) {
     json = false,
     timeoutMs = 120_000,
     service = 'chat',
+    // v1.5.0：允许直接传入某条服务配置（例如测试尚未保存的新配置）
+    serviceConf = null,
     returnRaw = false,
   } = opts;
 
-  const conf = serviceConfig(userId, service);
+  const conf = serviceConf || serviceConfig(userId, service);
   const client = makeClient(conf);
   const baseBody = {
     model,
@@ -466,14 +468,21 @@ export async function listModels(userId, service = 'chat', overrides = null) {
 export async function testConnection(userId, service = 'chat', overrides = null) {
   const started = Date.now();
   const confOverride = overrides || {};
+  const mergedConf = () => {
+    try {
+      return { ...serviceConfig(userId, service), ...confOverride };
+    } catch (err) {
+      if (confOverride.apiKey || confOverride.baseUrl) return { ...confOverride };
+      throw err;
+    }
+  };
   try {
     if (service === 'embedding') {
       const r = await embed(userId, 'cocoa connectivity test');
       return { ok: true, latencyMs: Date.now() - started, detail: `向量维度 ${r.vectors[0]?.length || 0}` };
     }
     if (service === 'stt' || service === 'tts') {
-      const conf = { ...serviceConfig(userId, service), ...confOverride };
-      const client = makeClient(conf);
+      const client = makeClient(mergedConf());
       const res = await client.models.list();
       return {
         ok: true,
@@ -484,6 +493,7 @@ export async function testConnection(userId, service = 'chat', overrides = null)
     const model = confOverride.model || resolveModel(userId, service === 'deepseek' ? 'search' : 'main');
     const r = await chatText(userId, {
       service: service === 'deepseek' ? 'deepseek' : 'chat',
+      serviceConf: mergedConf(),
       model,
       messages: [{ role: 'user', content: 'ping，只回答 pong' }],
       maxTokens: 16,
