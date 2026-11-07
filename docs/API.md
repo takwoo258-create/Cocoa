@@ -496,3 +496,25 @@ WS 事件：`plaza_used`、`plaza_quota`、`plaza_expiring`、`plaza_expired`、
 - `GET /api/admin/conversations?q=`：按用户 ID/代号/昵称/邮箱搜索，无结果返回空列表。
 - `GET /api/admin/server-status`：新增 `version/onlineConnections/database{size,wal,total}`。
 - 邮件模板：`admin_settings.mailTemplates.{code|share|expiry|quota|ban}.{subject,body}`，占位符 `{{name}} {{shareId}} {{expiresAt}} {{time}} {{reason}}`。
+
+### 16.8 生图模型（v1.5.1）
+
+服务配置新增 `image` 类型，与其它服务一样按配置文件保存与切换：
+
+```json
+{
+  "profiles": {
+    "image": [
+      { "id": "im1", "name": "生图", "baseUrl": "https://api.openai.com/v1", "apiKey": "****",
+        "model": "gpt-image-1", "contextWindow": null,
+        "extra": { "size": "1024x1024", "style": "vivid", "quality": "high" } }
+    ]
+  },
+  "active": { "image": "im1" }
+}
+```
+
+- `POST /api/config/models` 与 `POST /api/config/test` 支持 `service:"image"`。
+- `POST /api/media/generate`（登录）：`{ prompt, characterId?, size?, style?, quality? }` → `201 { id, url, mime, size, kind:"image", prompt, revisedPrompt }`；未配置生图模型时返回 400 `api_not_configured`。
+- 对话回复协议新增 `{"type":"image","content":"画面描述"}`：服务端生成图片后落库为 `kind="image"` 的 agent 消息，`meta` 带 `{mediaId,url,mime,generated:true,prompt}`；失败降级为文本。
+- 图片进入上下文时只使用描述文本，不写入二进制。

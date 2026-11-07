@@ -138,6 +138,7 @@ function configPayload(userId) {
     ready: {
       chat: Boolean(cfg.chat.apiKey || cfg.chat.baseUrl),
       vision: Boolean(cfg.vision?.apiKey || cfg.chat.apiKey),
+      image: Boolean(cfg.image?.apiKey || cfg.image?.baseUrl),
       embedding: Boolean(cfg.embedding.apiKey),
       stt: Boolean(cfg.stt.apiKey),
       tts: Boolean(cfg.tts.apiKey),

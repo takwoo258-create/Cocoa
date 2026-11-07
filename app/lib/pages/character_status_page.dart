@@ -240,14 +240,48 @@ class _CharacterStatusPageState extends State<CharacterStatusPage> {
                 child: LinearProgressIndicator(minHeight: 2),
               ),
             SectionCard(
-              title: '此刻的状态',
+              title: '作息',
+              child: Column(
+                children: <Widget>[
+                  _kvRow(
+                    '今日窗口',
+                    widget.character.settings.sleep.enabled
+                        ? '${widget.character.settings.sleep.start} - ${widget.character.settings.sleep.end}'
+                        : '未启用固定作息',
+                    icon: Icons.wb_twilight,
+                  ),
+                  _kvRow(
+                    '午睡',
+                    widget.character.settings.sleep.enabled
+                        ? '${widget.character.settings.sleep.napStart} - ${widget.character.settings.sleep.napEnd}'
+                        : '—',
+                    icon: Icons.bedtime_outlined,
+                  ),
+                  _kvRow(
+                    '当前',
+                    _state.sleepLabel,
+                    icon: Icons.nights_stay_outlined,
+                  ),
+                  _kvRow(
+                    '下次切换',
+                    _state.resting ? '起床时自动切换' : '入睡时自动切换',
+                    icon: Icons.schedule,
+                  ),
+                  const Text(
+                    '作息由角色当日安排决定，可能熬夜、晚起或临时调整。',
+                    style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                  ),
+                ],
+              ),
+            ),
+            SectionCard(
+              title: '动作与心情',
               child: Column(
                 children: <Widget>[
                   _kvRow('动作', _state.motion, icon: Icons.directions_run),
                   _kvRow('心理', _state.psychology, icon: Icons.psychology_outlined),
                   _kvRow('心情', _state.mood, icon: Icons.mood_outlined),
                   _kvRow('健康', _state.health, icon: Icons.healing_outlined),
-                  _kvRow('睡眠', _state.sleepLabel, icon: Icons.bedtime_outlined),
                   _kvRow(
                     '更新于',
                     formatDateTime(_state.updatedAt),

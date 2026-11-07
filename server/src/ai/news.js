@@ -420,6 +420,19 @@ export async function runNews(job, payload = {}) {
     });
     cleanupSystemContext(userId, characterId, { days: 3 });
 
+    // v1.5.1：读到想聊的话题时，过一段时间主动向用户提起（任意时间后，15-90 分钟）
+    try {
+      const { enqueue } = await import('../services/jobs.js');
+      const headline = truncate(selected.all[0]?.title || '', 40);
+      if (headline) {
+        const topic = `对了，我今天看到「${headline}」，${truncate(reflection, 80)}`;
+        const delayMs = (15 + Math.floor(Math.random() * 75)) * 60_000;
+        enqueue('active_reply', Date.now() + delayMs, { kind: 'subjective', content: topic }, { userId, characterId });
+      }
+    } catch (err) {
+      log.debug('新闻话题主动消息排期失败', err?.message);
+    }
+
     log.info('新闻阅读完成', { userId, characterId, bookId, count: selected.all.length, withBody, sources });
     return {
       ok: true,

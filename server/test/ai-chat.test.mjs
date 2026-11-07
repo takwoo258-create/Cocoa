@@ -93,7 +93,7 @@ function makeMedia(kind, { content = 'fake-bytes', ext = kind === 'image' ? 'png
 }
 
 function fakeProvider(overrides = {}) {
-  const state = { sentence: 'yes', calls: [], searchCalls: [], synthesizeCalls: [], visionCalls: 0, lastSystemText: '' };
+  const state = { sentence: 'yes', calls: [], searchCalls: [], synthesizeCalls: [], visionCalls: 0, lastSystemText: '', lastMessages: [] };
   const impl = {
     async chatText(userIdArg, opts) {
       state.calls.push({ task: opts.task, thinking: opts.thinking, temperature: opts.temperature, maxTokens: opts.maxTokens });
@@ -102,6 +102,7 @@ function fakeProvider(overrides = {}) {
         .map((m) => String(m.content || ''))
         .join('\n');
       state.lastSystemText = systemText;
+      state.lastMessages = (opts.messages || []).map((msg) => ({ role: msg.role, content: msg.content }));
       if (opts.task === 'sentence') {
         return { text: state.sentence, usage: { input: 3, output: 1 }, model: 'fake-sentence' };
       }
@@ -223,6 +224,7 @@ beforeEach(() => {
   chat.resetRuntime();
   context.clearCompressing();
   chat.setChatProvider(null);
+  chat.setImageGenerator(null);
 });
 
 function lastAgentMessage(characterId) {
@@ -835,6 +837,126 @@ test('chat: 有搜索 key 时注入外部资料并记录 search 用量', { timeo
 
   const usage = get("SELECT COUNT(*) AS c FROM usage_records WHERE user_id = ? AND kind = 'search'", user);
   assert.ok(usage.c >= 1, '应记录 kind=search 的用量');
+});
+
+// ---------------- v1.5.1：生图能力 ----------------
+
+test('image: 生图成功落库 kind=image + meta（媒体信息/描述），且不参与分段', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  saveUserApi(userId, {
+    image: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-image', model: 'gpt-image-1', extra: { size: '1024x1024', style: 'vivid' } },
+  });
+  const description = '夕阳下的海边，橘猫坐在礁石上，暖光，水彩风格';
+  const fake = fakeProvider({
+    main: async () => ({
+      text: JSON.stringify({ type: 'image', content: description }),
+      usage: { input: 5, output: 5 },
+      model: 'fake-image-intent',
+    }),
+  });
+  chat.setChatProvider(fake.provider);
+  let generatorArgs = null;
+  chat.setImageGenerator(async (uid, args) => {
+    generatorArgs = args;
+    return {
+      mediaId: 'md_fake_generated',
+      url: '/api/media/md_fake_generated',
+      mime: 'image/png',
+      size: 1234,
+      prompt: args.prompt,
+      revisedPrompt: 'revised prompt',
+    };
+  });
+
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '画一张你在海边的照片' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true);
+  assert.equal(out.type, 'image');
+  assert.equal(out.fallback, false);
+  assert.equal(out.mediaId, 'md_fake_generated');
+  assert.ok(fake.state.lastSystemText.includes('"type":"image"'), '配置生图后提示词应开放画图能力');
+  assert.ok(fake.state.lastSystemText.includes('一次只画一张'));
+
+  const agentRows = all("SELECT * FROM messages WHERE character_id = ? AND role = 'agent'", character.id);
+  assert.equal(agentRows.length, 1, '图片消息单独一条，不分段');
+  const row = agentRows[0];
+  assert.equal(row.kind, 'image');
+  assert.equal(decryptText(userId, row.content), description);
+  const meta = decryptJson(userId, row.meta, {});
+  assert.equal(meta.mediaId, 'md_fake_generated');
+  assert.equal(meta.url, '/api/media/md_fake_generated');
+  assert.equal(meta.generated, true);
+  assert.equal(meta.prompt, description);
+  assert.equal(meta.mime, 'image/png');
+  assert.equal(meta.revisedPrompt, 'revised prompt');
+
+  assert.ok(generatorArgs, '应调用生图实现');
+  assert.equal(generatorArgs.characterId, character.id);
+  assert.equal(generatorArgs.prompt, description);
+  assert.equal(generatorArgs.size, '1024x1024');
+  assert.equal(generatorArgs.style, 'vivid');
+
+  // 历史用 [图片] 描述 占位，base64 不进 prompt
+  const fakeNext = fakeProvider();
+  chat.setChatProvider(fakeNext.provider);
+  const next = await chat.submitUserMessage({ userId, characterId: character.id, content: '真好看' });
+  await next.waitForReply;
+  const serialized = JSON.stringify(fakeNext.state.lastMessages);
+  assert.ok(serialized.includes('[图片] 夕阳下的海边'), '图片历史应使用 [图片] 描述 占位');
+  assert.ok(!serialized.includes('base64'), 'prompt 不应包含图片二进制');
+  const imageHistory = fakeNext.state.lastMessages.find((m) => String(m.content).startsWith('[图片] '));
+  assert.ok(imageHistory);
+  assert.ok(String(imageHistory.content).length < 200, '图片占位按描述文本估算 token');
+
+  saveUserApi(userId, { image: { apiKey: '' } });
+  chat.setImageGenerator(null);
+});
+
+test('image: 生图失败降级为普通文本，不暴露错误细节', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  saveUserApi(userId, { image: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-image', model: 'gpt-image-1' } });
+  const fake = fakeProvider({
+    main: async () => ({ text: JSON.stringify({ type: 'image', content: '雨夜霓虹街道上的猫' }), usage: { input: 5, output: 5 }, model: 'fake' }),
+  });
+  chat.setChatProvider(fake.provider);
+  chat.setImageGenerator(async () => {
+    throw new Error('upstream exploded with secret detail');
+  });
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '画一张雨夜' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.sent, true);
+  assert.equal(out.fallback, true);
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.kind, 'text');
+  assert.ok(agent.plain.includes('没画成') || agent.plain.includes('画给你看'));
+  assert.ok(!agent.plain.includes('upstream exploded'), '正文不暴露错误细节');
+  assert.equal(agent.meta.reason, 'image_failed');
+  assert.equal(agent.meta.generated, false);
+  saveUserApi(userId, { image: { apiKey: '' } });
+  chat.setImageGenerator(null);
+});
+
+test('image: 未配置生图模型时降级，不调用生图实现且提示词不开放画图', { timeout: 20_000 }, async () => {
+  const character = freshCharacter();
+  saveUserApi(userId, { image: { apiKey: '' } });
+  const fake = fakeProvider({
+    main: async () => ({ text: JSON.stringify({ type: 'image', content: '不合时宜的画面' }), usage: { input: 5, output: 5 }, model: 'fake' }),
+  });
+  chat.setChatProvider(fake.provider);
+  let generatorCalls = 0;
+  chat.setImageGenerator(async () => {
+    generatorCalls += 1;
+    return { mediaId: 'should_not_happen' };
+  });
+  const submitted = await chat.submitUserMessage({ userId, characterId: character.id, content: '画个东西' });
+  const out = await submitted.waitForReply;
+  assert.equal(out.fallback, true);
+  assert.equal(generatorCalls, 0, '未配置时不应调用生图');
+  assert.ok(!fake.state.lastSystemText.includes('"type":"image"'), '未配置生图时提示词不应提画图');
+  const agent = lastAgentMessage(character.id);
+  assert.equal(agent.kind, 'text');
+  assert.equal(agent.meta.reason, 'image_failed');
+  chat.setImageGenerator(null);
 });
 
 // ---------------- 上下文压缩 ----------------

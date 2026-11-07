@@ -120,7 +120,7 @@ Cocoa/
 ├── deploy/               环境模板、服务单元、安装与备份脚本
 ├── scripts/              构建与工具链脚本
 ├── docs/                 API 契约与部署手册
-├── update1.5.0.md        当前版本更新日志
+├── update1.5.1.md        当前版本更新日志
 └── LICENSE               GPL-3.0
 ```
 
@@ -217,14 +217,15 @@ flutter build apk --release
 | 版本 | `GET /api/version/latest`、`/updates` | 版本信息与更新说明 |
 | QQ(OneBot) | `WS /onebot/ws`、`POST /onebot/event`、`GET /onebot/status` | NapCat 上报入口 |
 
-模型回复协议（`type: message/profile/status/subjective/wakeup`、分段 `sendsec` 与兼容字段 `wait`、主动消息 `timesec`）与全部错误码以 `docs/API.md` 为准。
+模型回复协议（`type: message/image/profile/status/subjective/wakeup`、分段 `sendsec` 与兼容字段 `wait`、主动消息 `timesec`）与全部错误码以 `docs/API.md` 为准。
 
 ## 版本与更新说明
 
-当前版本 **1.5.0**（2026-11-07），本版更新见 [`update1.5.0.md`](update1.5.0.md)。历史版本日志：
+当前版本 **1.5.1**（2026-11-07），本版更新见 [`update1.5.1.md`](update1.5.1.md)。历史版本日志：
 
 | 版本 | 日期 | 日志 |
 | --- | --- | --- |
+| 1.5.1 | 2026-11-07 | [update1.5.1.md](update1.5.1.md) |
 | 1.5.0 | 2026-11-07 | [update1.5.0.md](update1.5.0.md) |
 | 1.3.1 | 2026-11-03 | [update1.3.1.md](update1.3.1.md) |
 | 1.3.0 | 2026-11-02 | [update1.3.0.md](update1.3.0.md) |

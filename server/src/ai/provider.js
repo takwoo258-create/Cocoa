@@ -49,6 +49,7 @@ function serviceLabel(service) {
     deepseek: 'DeepSeek',
     stt: '语音识别',
     tts: '语音合成',
+    image: '生图模型',
     search: '网页搜索',
   }[service] || service;
 }
@@ -343,6 +344,82 @@ export async function synthesize(userId, text, { voice } = {}) {
   }
 }
 
+/** 生图：OpenAI 兼容 /v1/images/generations（支持 b64_json 与 URL 两种返回） */
+export async function generateImage(userId, { prompt, size, n = 1, style, quality, timeoutMs = 180_000 } = {}) {
+  const conf = serviceConfig(userId, 'image');
+  const text = String(prompt || '').trim().slice(0, 4000);
+  if (!text) throw badRequest('缺少画面描述', 'image_prompt_required');
+  const base = (conf.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const count = Math.min(4, Math.max(1, Number(n) || 1));
+  const body = { model: conf.model || 'gpt-image-1', prompt: text, n: count };
+  const chosenSize = size || conf.extra?.size;
+  if (chosenSize) body.size = chosenSize;
+  const chosenStyle = style || conf.extra?.style;
+  if (chosenStyle) body.style = chosenStyle;
+  const chosenQuality = quality || conf.extra?.quality;
+  if (chosenQuality) body.quality = chosenQuality;
+
+  const call = async (payload) => {
+    const res = await fetch(`${base}/images/generations`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${conf.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const raw = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      /* 非 JSON 响应 */
+    }
+    if (!res.ok) {
+      const err = new Error(`生图服务 HTTP ${res.status} ${raw.slice(0, 200)}`);
+      err.status = res.status;
+      err.body = json;
+      throw err;
+    }
+    return json;
+  };
+
+  let data;
+  try {
+    data = await call({ ...body, response_format: 'b64_json' });
+  } catch (err) {
+    // 部分新模型不接受 response_format，去掉后重试一次
+    if ([400, 422].includes(Number(err.status))) data = await call(body);
+    else throw wrap(err);
+  }
+
+  const items = Array.isArray(data?.data) ? data.data : [];
+  const out = [];
+  for (const item of items) {
+    let buffer = null;
+    let mime = 'image/png';
+    if (item?.b64_json) {
+      buffer = Buffer.from(String(item.b64_json), 'base64');
+    } else if (item?.url) {
+      const r = await fetch(item.url, { signal: AbortSignal.timeout(60_000) });
+      if (!r.ok) continue;
+      buffer = Buffer.from(await r.arrayBuffer());
+      mime = r.headers.get('content-type') || mime;
+    }
+    if (!buffer?.length) continue;
+    out.push({ buffer, mime: sniffImageMime(buffer, mime), revisedPrompt: String(item.revised_prompt || '') });
+  }
+  if (!out.length) throw new AppError(502, 'image_empty', '生图服务没有返回可用图片');
+  return out;
+}
+
+function sniffImageMime(buffer, fallback = 'image/png') {
+  if (!buffer?.length) return fallback;
+  if (buffer[0] === 0x89 && buffer[1] === 0x50) return 'image/png';
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg';
+  if (buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  if (buffer.slice(0, 3).toString('ascii') === 'GIF') return 'image/gif';
+  return fallback.startsWith('image/') ? fallback : 'image/png';
+}
+
 /** 文本嵌入 */
 export async function embed(userId, input, { model } = {}) {
   const conf = serviceConfig(userId, 'embedding');
@@ -481,6 +558,19 @@ export async function testConnection(userId, service = 'chat', overrides = null)
       const r = await embed(userId, 'cocoa connectivity test');
       return { ok: true, latencyMs: Date.now() - started, detail: `向量维度 ${r.vectors[0]?.length || 0}` };
     }
+    if (service === 'image') {
+      const client = makeClient(mergedConf());
+      try {
+        const res = await client.models.list();
+        return { ok: true, latencyMs: Date.now() - started, detail: `可用模型 ${res.data?.length || 0} 个` };
+      } catch (err) {
+        const status = Number(err?.status || err?.response?.status || 0);
+        if ([404, 405].includes(status)) {
+          return { ok: true, latencyMs: Date.now() - started, detail: '端点可达（该服务不提供模型列表）' };
+        }
+        throw err;
+      }
+    }
     if (service === 'stt' || service === 'tts') {
       const client = makeClient(mergedConf());
       const res = await client.models.list();
@@ -542,4 +632,4 @@ export function saveAudioBuffer(buffer, ext = 'mp3') {
 }
 
 export { serviceConfig, usageOf, estimateCost };
-export default { chatText, embed, listModels, testConnection, clientFor, resolveModel };
+export default { chatText, embed, generateImage, listModels, testConnection, clientFor, resolveModel };

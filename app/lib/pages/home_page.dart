@@ -149,6 +149,10 @@ class _HomePageState extends State<HomePage>
 
   void _selectTab(int index) {
     if (index == _index) return;
+    final String motion = AppScope.read(context).motion;
+    _tabFade.duration = Duration(
+      milliseconds: motion == 'off' ? 1 : (motion == 'reduced' ? 110 : 220),
+    );
     setState(() => _index = index);
     _tabFade.forward(from: 0);
   }

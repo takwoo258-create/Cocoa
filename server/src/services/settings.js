@@ -4,13 +4,14 @@ import { nowIso, parseJson } from '../core/util.js';
 import env from '../env.js';
 
 // v1.2.0 模型分享：可分享的服务集合（search 复用 deepseek，仅作兼容）
-export const SHARE_SERVICES = ['chat', 'embedding', 'deepseek', 'stt', 'tts', 'search'];
+export const SHARE_SERVICES = ['chat', 'embedding', 'deepseek', 'stt', 'tts', 'search', 'image'];
 const SHARE_CACHE_TTL_MS = 10_000;
 const shareCache = new Map(); // userId -> { at, data }
 
 const DEFAULT_API = {
   chat: { baseUrl: '', apiKey: '', model: '' },
   vision: { baseUrl: '', apiKey: '', model: '' },
+  image: { baseUrl: '', apiKey: '', model: '' },
   embedding: { baseUrl: '', apiKey: '', model: 'text-embedding-3-small' },
   deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: '', model: 'deepseek-chat' },
   stt: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: '', model: 'mimo-audio' },
@@ -140,7 +141,7 @@ export function invalidateShareCache(userId = null) {
   else shareCache.clear();
 }
 
-export const SERVICE_TYPES = ['chat', 'vision', 'tts', 'stt', 'embedding', 'search'];
+export const SERVICE_TYPES = ['chat', 'vision', 'image', 'tts', 'stt', 'embedding', 'search'];
 // 兼容旧字段名：deepseek 与 search 指向同一套配置
 export const PROVIDER_SERVICES = [...SERVICE_TYPES, 'deepseek'];
 const SERVICE_ALIAS = { deepseek: 'search' };
@@ -150,6 +151,7 @@ const SERVICE_KEYS = ['baseUrl', 'apiKey', 'model', 'voice', 'extra', 'contextWi
 export const SERVICE_LABELS = {
   chat: '对话模型',
   vision: '视觉模型',
+  image: '生图模型',
   tts: '语音合成',
   stt: '语音识别',
   embedding: '嵌入模型',

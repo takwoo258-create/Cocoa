@@ -22,7 +22,7 @@ export function typingSecondsFor(content) {
   if (!text) return 0;
   return Math.min(SEND_SEC_MAX, Math.max(1, Math.round(text.length * TYPING_SEC_PER_CHAR)));
 }
-const TYPES = new Set(['message', 'profile', 'status', 'subjective', 'wakeup']);
+const TYPES = new Set(['message', 'profile', 'status', 'subjective', 'wakeup', 'image']);
 
 function asText(v) {
   if (v == null) return '';
@@ -178,6 +178,18 @@ export function normalizeReply(obj, { segmentEnabled = true, rawText = '' } = {}
 
   if (type === 'profile') {
     return { type, content: fallbackContent, segments: [], devide: 1, wait: 0 };
+  }
+
+  // v1.5.1：生图消息，content 为具体画面描述；不参与分段
+  if (type === 'image') {
+    return {
+      type,
+      content: fallbackContent,
+      segments: [],
+      devide: 1,
+      wait: 0,
+      prompt: fallbackContent,
+    };
   }
 
   if (type === 'status') {

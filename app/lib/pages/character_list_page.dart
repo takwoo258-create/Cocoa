@@ -11,6 +11,7 @@ import '../core/theme.dart';
 import '../core/utils.dart';
 import '../models/character.dart';
 import '../widgets/common.dart';
+import '../widgets/saying_card.dart';
 import 'api_setup_dialog.dart';
 import 'character_edit_page.dart';
 import 'character_settings_page.dart';
@@ -31,6 +32,8 @@ class CharacterListPageState extends State<CharacterListPage> {
   String? _error;
   String _botQQ = '';
   String _saying = '';
+  bool _sayingLoading = false;
+  DateTime? _sayingAt;
   bool _botConnected = false;
 
   @override
@@ -74,6 +77,13 @@ class CharacterListPageState extends State<CharacterListPage> {
   }
 
   Future<void> _loadSaying() async {
+    final DateTime now = DateTime.now();
+    if (_sayingAt != null &&
+        now.difference(_sayingAt!) < const Duration(seconds: 2)) {
+      return;
+    }
+    _sayingAt = now;
+    if (mounted) setState(() => _sayingLoading = true);
     try {
       final http.Response res = await http
           .get(Uri.parse('https://uapis.cn/api/v1/saying'))
@@ -95,7 +105,9 @@ class CharacterListPageState extends State<CharacterListPage> {
       text = text.trim();
       if (text.isNotEmpty && mounted) setState(() => _saying = text);
     } catch (_) {
-      // 失败静默
+      // 失败静默，保留上一条
+    } finally {
+      if (mounted) setState(() => _sayingLoading = false);
     }
   }
 
@@ -305,16 +317,6 @@ class CharacterListPageState extends State<CharacterListPage> {
           ),
         ],
       ),
-          if (_saying.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 3),
-              child: Text(
-                _saying,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 10, color: AppColors.inkSoft),
-              ),
-            ),
         ],
       ),
     );
@@ -331,6 +333,18 @@ class CharacterListPageState extends State<CharacterListPage> {
                 itemCount: _characters.length + 1,
                 itemBuilder: (BuildContext context, int i) {
                   if (i == 0) return header;
+                  if (i == 1) {
+                    return Column(
+                      children: <Widget>[
+                        SayingCard(
+                          saying: _saying,
+                          loading: _sayingLoading,
+                          onRefresh: _loadSaying,
+                        ),
+                        _card(_characters[0]),
+                      ],
+                    );
+                  }
                   return _card(_characters[i - 1]);
                 },
               );
@@ -341,6 +355,11 @@ class CharacterListPageState extends State<CharacterListPage> {
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
               children: <Widget>[
                 header,
+                SayingCard(
+                  saying: _saying,
+                  loading: _sayingLoading,
+                  onRefresh: _loadSaying,
+                ),
                 Wrap(
                   spacing: 12,
                   runSpacing: 12,

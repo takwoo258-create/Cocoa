@@ -85,12 +85,14 @@ class _AdminPageState extends State<AdminPage>
   bool _updateAutoUpgrade = false;
   bool _systemModelsEnabled = false;
   List<ProviderConfig> _systemProviders = <ProviderConfig>[];
+  List<Map<String, dynamic>> _bans = <Map<String, dynamic>>[];
+  bool _loadingBans = false;
   String? _upgradingTag;
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 9, vsync: this);
+    _tab = TabController(length: 10, vsync: this);
     _tab.addListener(_onTabChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadOverview());
   }
@@ -161,6 +163,9 @@ class _AdminPageState extends State<AdminPage>
         break;
       case 6:
         _loadStorage();
+        break;
+      case 9:
+        _loadBans();
         break;
     }
   }
@@ -1884,6 +1889,229 @@ class _AdminPageState extends State<AdminPage>
     setState(() => _systemProviders.removeWhere((ProviderConfig x) => x.id == p.id));
   }
 
+  Future<void> _loadBans() async {
+    final AppState state = AppScope.read(context);
+    setState(() => _loadingBans = true);
+    try {
+      final List<Map<String, dynamic>> list =
+          await state.adminService.plazaBans();
+      if (mounted) setState(() => _bans = list);
+    } catch (e) {
+      if (mounted) showToast('封禁列表加载失败：$e', isError: true);
+    } finally {
+      if (mounted) setState(() => _loadingBans = false);
+    }
+  }
+
+  Future<void> _newBan() async {
+    final TextEditingController share = TextEditingController();
+    final TextEditingController user = TextEditingController();
+    final TextEditingController reason = TextEditingController();
+    final TextEditingController until = TextEditingController();
+    String scope = 'server';
+    bool permanent = false;
+    final Map<String, dynamic>? body = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (BuildContext ctx) => StatefulBuilder(
+        builder: (BuildContext ctx, StateSetter setSt) => AlertDialog(
+          title: const Text('新建广场封禁'),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  TextField(
+                    controller: share,
+                    decoration: const InputDecoration(
+                      labelText: 'share ID（与用户二选一）',
+                    ),
+                  ),
+                  TextField(
+                    controller: user,
+                    decoration: const InputDecoration(
+                      labelText: '本服用户 ID / 邮箱',
+                    ),
+                  ),
+                  DropdownButtonFormField<String>(
+                    initialValue: scope,
+                    decoration: const InputDecoration(labelText: '范围'),
+                    items: const <DropdownMenuItem<String>>[
+                      DropdownMenuItem<String>(value: 'all', child: Text('全部')),
+                      DropdownMenuItem<String>(value: 'server', child: Text('本服')),
+                      DropdownMenuItem<String>(value: 'global', child: Text('全球')),
+                    ],
+                    onChanged: (String? v) =>
+                        setSt(() => scope = v ?? 'server'),
+                  ),
+                  TextField(
+                    controller: reason,
+                    decoration: const InputDecoration(labelText: '原因'),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('永久'),
+                    value: permanent,
+                    onChanged: (bool v) => setSt(() => permanent = v),
+                  ),
+                  if (!permanent)
+                    TextField(
+                      controller: until,
+                      decoration: const InputDecoration(
+                        labelText: '截止时间',
+                        hintText: 'YYYY-MM-DD HH:mm:ss',
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (share.text.trim().isEmpty && user.text.trim().isEmpty) {
+                  showToast('share ID 与用户至少填一个', isError: true);
+                  return;
+                }
+                Navigator.of(ctx).pop(<String, dynamic>{
+                  if (share.text.trim().isNotEmpty)
+                    'shareId': share.text.trim(),
+                  if (user.text.trim().isNotEmpty)
+                    'userId': user.text.trim(),
+                  'scope': scope,
+                  'reason': reason.text.trim(),
+                  'permanent': permanent,
+                  if (!permanent) 'until': until.text.trim(),
+                });
+              },
+              child: const Text('封禁'),
+            ),
+          ],
+        ),
+      ),
+    );
+    share.dispose();
+    user.dispose();
+    reason.dispose();
+    until.dispose();
+    if (body == null) return;
+    final AppState state = AppScope.read(context);
+    try {
+      await state.adminService.createPlazaBan(body);
+      if (mounted) {
+        showToast('已封禁');
+        await _loadBans();
+      }
+    } catch (e) {
+      if (mounted) showToast('封禁失败：$e', isError: true);
+    }
+  }
+
+  Future<void> _removeBan(Map<String, dynamic> b) async {
+    final AppState state = AppScope.read(context);
+    final String id = asString(b['id']);
+    try {
+      await state.adminService.deletePlazaBan(id);
+      if (mounted) {
+        showToast('已解除');
+        await _loadBans();
+      }
+    } catch (e) {
+      if (mounted) showToast('解除失败：$e', isError: true);
+    }
+  }
+
+  Widget _bansTab() {
+    if (_loadingBans && _bans.isEmpty) {
+      return const LoadingView(text: '封禁列表加载中…');
+    }
+    return Column(
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+          child: Row(
+            children: <Widget>[
+              const Expanded(
+                child: Text(
+                  '广场封禁',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
+              FilledButton.icon(
+                onPressed: _newBan,
+                icon: const Icon(Icons.block, size: 16),
+                label: const Text('新建封禁'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _bans.isEmpty
+              ? const EmptyView(text: '暂无封禁记录', icon: Icons.block)
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _bans.length,
+                  itemBuilder: (BuildContext ctx, int i) {
+                    final Map<String, dynamic> b = _bans[i];
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppColors.sand),
+                      ),
+                      child: Row(
+                        children: <Widget>[
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(
+                                  '#${asString(b['shareId'], asString(b['nickname'], '-'))}'
+                                  ' · ${asString(b['scope'])}',
+                                  style: const TextStyle(fontSize: 12.5),
+                                ),
+                                Text(
+                                  '${asString(b['reason'])}'
+                                  '${asBool(b['permanent']) ? ' · 永久' : ' · ${asString(b['until'])}'}',
+                                  style: const TextStyle(
+                                    fontSize: 10.5,
+                                    color: AppColors.inkSoft,
+                                  ),
+                                ),
+                                Text(
+                                  '状态：${asString(b['status'], 'active')}',
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    color: AppColors.inkSoft,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => _removeBan(b),
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppColors.danger,
+                              textStyle: const TextStyle(fontSize: 10.5),
+                            ),
+                            child: const Text('解除'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
   Widget _systemModelsCard() {
     return SectionCard(
       title: '统一模型',
@@ -2242,6 +2470,7 @@ class _AdminPageState extends State<AdminPage>
               Tab(text: '存储'),
               Tab(text: '服务器状态'),
               Tab(text: '升级'),
+              Tab(text: '广场封禁'),
             ],
           ),
           Expanded(
@@ -2259,6 +2488,7 @@ class _AdminPageState extends State<AdminPage>
                 _storageTab(),
                 _serverStatusTab(),
                 _upgradeTab(),
+                _bansTab(),
               ],
             ),
           ),

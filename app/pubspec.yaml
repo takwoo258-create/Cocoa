@@ -1,7 +1,7 @@
 name: cocoa
 description: Cocoa 虚拟智能体陪伴系统 Android 客户端
 publish_to: 'none'
-version: 1.5.0+8
+version: 1.5.1+9
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

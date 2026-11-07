@@ -30,7 +30,7 @@ import {
   usageInfo,
   limitState,
   refreshConversationUsage,
-  promptHistory,
+  recentMessages,
   shapeMessage,
   estimateTextTokens,
   setCompressing,
@@ -458,7 +458,35 @@ function detectVoiceReply(userId, conversationId) {
 
 // ---------------- 提示词 ----------------
 
-export function buildSystemPrompt({ character, state, summary = '', memory = '', thinking = false, segmentEnabled = true, sleepState = 'awake', userAddress = '主人', world = '', voiceTone = '' } = {}) {
+// ---------------- 生图（v1.5.1） ----------------
+
+let imageGeneratorOverride = null;
+
+/** 单测注入生图实现（生产默认使用 ai/image.js 的 generateAndSaveImage） */
+export function setImageGenerator(fn) {
+  imageGeneratorOverride = fn || null;
+}
+
+/** 是否配置了可用的生图模型（api.profiles.image / image 配置有 apiKey） */
+export function imageGenerationAvailable(userId) {
+  try {
+    const cfg = getUserApi(userId);
+    const conf = cfg.image || cfg.profiles?.image;
+    return Boolean(conf?.apiKey);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveImageGenerator() {
+  if (typeof imageGeneratorOverride === 'function') return imageGeneratorOverride;
+  const mod = await import('./image.js');
+  const fn = mod.generateAndSaveImage || mod.default?.generateAndSaveImage;
+  if (typeof fn !== 'function') throw new Error('image_generator_unavailable');
+  return fn;
+}
+
+export function buildSystemPrompt({ character, state, summary = '', memory = '', thinking = false, segmentEnabled = true, sleepState = 'awake', userAddress = '主人', world = '', voiceTone = '', imageEnabled = false } = {}) {
   const time = new Date(Date.now() + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 16);
   return [
     `你是「${character.name}」，正在和你的${character.relation || '重要的人'}通过聊天软件聊天。`,
@@ -482,6 +510,9 @@ export function buildSystemPrompt({ character, state, summary = '', memory = '',
     '{"type":"message","content":"完整回复","devide":1,"agent":[{"content":"第一段","wait":0,"sendsec":3}]}',
     '分段规则（重要）：如果回复自然包含两段以上内容、或需要停顿/连发，必须使用 agent 数组分段：devide 为段数，agent 每段 {content, wait, sendsec}。sendsec 是这一段打字需要的秒数，按字数估算（0.3~0.5 秒/字，取 1-20 的整数），不要每段都一样；wait 是排队秒数（1-3，第一段 0，旧字段保留）。不要只输出 content。普通一句短回复才用单段。只有你（智能体）的消息允许分段。',
     '如果要主动发起话题而不是回应，使用：{"type":"subjective","content":"内容","timesec":60,"sendsec":60}。timesec 与 sendsec 等价，表示多少秒后再发。',
+    imageEnabled
+      ? `如果${userAddress}明确要你画图、发自拍、或想看某个画面，可以只输出 {"type":"image","content":"具体画面描述：主体、场景、光线、风格"}；一次只画一张，不要每句话都发图。图片消息不需要分段。`
+      : '',
     thinking ? '这次请先在心里认真思考再回答（可以反复推敲），但只输出最终 JSON，不要输出思考过程。' : '',
     segmentEnabled ? '' : '本次不要分段，只填 content 字段即可。',
   ]
@@ -781,7 +812,127 @@ async function sendAgentReply({ userId, characterId, conversation, state, parsed
   };
 }
 
+function historyForPrompt(userId, conversationId, limit = 30) {
+  return recentMessages(userId, conversationId, limit)
+    .filter((row) => row.role === 'user' || row.role === 'agent')
+    .map((row) => {
+      let content = '';
+      try {
+        content = decryptText(userId, row.content);
+      } catch {
+        content = '';
+      }
+      const isImage = row.kind === 'image';
+      return {
+        role: row.role === 'user' ? 'user' : 'assistant',
+        content: isImage && row.role === 'agent' ? `[图片] ${content}` : content,
+      };
+    })
+    .filter((msg) => String(msg.content || '').trim());
+}
+
+async function sendImageReply({ userId, characterId, conversation, state, parsed, reason = 'image', memoryHit = false, reasoning = '' }) {
+  const prompt = String(parsed.content || '').trim();
+  const fallbackText = '我刚刚想画给你看，可惜没画成……等会儿再试试好不好？';
+  const thinkingText = String(reasoning || '').trim().slice(0, 4_000);
+  let generated = null;
+  let error = null;
+
+  if (!prompt) error = 'empty_prompt';
+  else if (!imageGenerationAvailable(userId)) error = 'image_not_configured';
+  else {
+    try {
+      const cfg = getUserApi(userId).image || {};
+      const generate = await resolveImageGenerator();
+      generated = await generate(userId, {
+        characterId,
+        prompt,
+        size: cfg.extra?.size,
+        style: cfg.extra?.style,
+        quality: cfg.extra?.quality,
+      });
+      if (!generated?.mediaId) throw new Error('image_generation_empty');
+    } catch (err) {
+      error = err?.message || 'image_generation_failed';
+    }
+  }
+
+  if (error) {
+    logger.warn('生图失败，降级为文本', { characterId, error });
+    const row = persistMessage({
+      userId,
+      characterId,
+      conversationId: conversation.id,
+      role: 'agent',
+      kind: 'text',
+      content: fallbackText,
+      meta: {
+        type: 'image',
+        generated: false,
+        reason: 'image_failed',
+        prompt: prompt || null,
+        ...(thinkingText ? { thinking: thinkingText } : {}),
+      },
+      tokensOut: estimateTextTokens(fallbackText),
+    });
+    broadcastMessage(userId, characterId, row);
+    refreshConversationUsage(conversation.id);
+    const after = await afterAgentSent({ userId, characterId, conversation, state, reason, memoryHit });
+    return {
+      ok: true,
+      sent: true,
+      type: 'image',
+      fallback: true,
+      messageId: row.id,
+      content: fallbackText,
+      mediaId: null,
+      url: null,
+      ...after,
+    };
+  }
+
+  const meta = {
+    type: 'image',
+    mediaId: generated.mediaId,
+    url: generated.url,
+    mime: generated.mime || 'image/png',
+    size: generated.size || 0,
+    generated: true,
+    prompt: generated.prompt || prompt,
+    revisedPrompt: generated.revisedPrompt || null,
+    reason,
+    ...(thinkingText ? { thinking: thinkingText } : {}),
+  };
+  const row = persistMessage({
+    userId,
+    characterId,
+    conversationId: conversation.id,
+    role: 'agent',
+    kind: 'image',
+    content: prompt,
+    meta,
+    tokensOut: estimateTextTokens(prompt),
+  });
+  broadcastMessage(userId, characterId, row);
+  refreshConversationUsage(conversation.id);
+  const after = await afterAgentSent({ userId, characterId, conversation, state, reason, memoryHit });
+  return {
+    ok: true,
+    sent: true,
+    type: 'image',
+    fallback: false,
+    messageId: row.id,
+    content: prompt,
+    mediaId: generated.mediaId,
+    url: generated.url,
+    ...after,
+  };
+}
+
 async function handleParsedReply({ userId, characterId, conversation, state, parsed, thinking, reason, voiceReply, reasoning = '', memoryHit = false, voiceStyle = null }) {
+  if (parsed.type === 'image') {
+    return sendImageReply({ userId, characterId, conversation, state, parsed, reason: 'image', memoryHit, reasoning });
+  }
   if (parsed.type === 'subjective') {
     return deliverSubjective({
       userId,
@@ -836,6 +987,7 @@ export function replyIsUsable(parsed, reason = 'user_message') {
     ? parsed.segments.filter((seg) => String(seg?.content || '').trim())
     : [];
   if (parsed.type === 'message') return Boolean(content || segments.length);
+  if (parsed.type === 'image') return Boolean(content);
   if (parsed.type === 'subjective') {
     return ['active_timeout', 'active_reply'].includes(reason) && Boolean(content);
   }
@@ -922,7 +1074,8 @@ async function generateOnce(opts, s) {
     });
     const userAddress = String(character.settings?.userAddress || '').trim() || '主人';
     const world = cachedWeatherPrompt(character.settings, { fetchIfMissing: false });
-    const history = promptHistory(userId, conversation.id, 30);
+    const imageEnabled = imageGenerationAvailable(userId);
+    const history = historyForPrompt(userId, conversation.id, 30);
     const messages = [
       {
         role: 'system',
@@ -937,6 +1090,7 @@ async function generateOnce(opts, s) {
           userAddress,
           world,
           voiceTone: voiceExpected ? voiceStyle.tone : '',
+          imageEnabled,
         }),
       },
     ];
@@ -1023,7 +1177,7 @@ async function generateOnce(opts, s) {
     }
 
     let usedReason = reason;
-    let fallback = false;
+    let emptyReplyFallback = false;
     if (replyNeedsRetry(res, parsed, reason)) {
       // 重试后仍不可用：绝不静默丢弃，落一条温和兜底消息
       logger.error('模型连续两次未产出可用回复，写入兜底消息', {
@@ -1031,7 +1185,7 @@ async function generateOnce(opts, s) {
         finishReason: res?.finishReason || null,
         rawText: String(res?.text || '').slice(0, 300),
       });
-      fallback = true;
+      emptyReplyFallback = true;
       usedReason = 'fallback';
       parsed = {
         type: 'message',
@@ -1065,7 +1219,7 @@ async function generateOnce(opts, s) {
       parsed,
       search: Boolean(search?.context),
       retried,
-      fallback,
+      fallback: Boolean(emptyReplyFallback || out?.fallback),
       reasoning: reasoningText || null,
     };
   } catch (err) {
@@ -1683,6 +1837,8 @@ export default {
   handleWakeJudge,
   setChatProvider,
   getChatProvider,
+  setImageGenerator,
+  imageGenerationAvailable,
   getContextInfo,
   listChatMessages,
   wakeCharacter,

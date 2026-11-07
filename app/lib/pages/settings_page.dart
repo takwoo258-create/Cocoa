@@ -16,7 +16,6 @@ import 'settings/service_config_page.dart';
 import 'settings/plaza_page.dart';
 import 'settings/templates_page.dart';
 import 'settings/theme_page.dart';
-import 'settings/shares_page.dart';
 
 /// v1.0.1：设置首页改为分组二级菜单。
 class SettingsPage extends StatelessWidget {
@@ -233,13 +232,6 @@ class SettingsPage extends StatelessWidget {
             title: '人设模板',
             subtitle: '保存 / 导入 / 应用创建角色',
             page: const TemplatesPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.swap_horiz,
-            title: '模型分享',
-            subtitle: '分享 / 索要模型，设置时长或截止时间',
-            page: const SharesPage(),
           ),
           _tile(
             context,

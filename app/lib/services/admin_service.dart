@@ -151,6 +151,17 @@ class AdminService {
     return asMap(await api.get('/admin/server-status', silent: true));
   }
 
+  Future<List<Map<String, dynamic>>> plazaBans() async {
+    final dynamic r = await api.get('/admin/plaza/bans', silent: true);
+    return asMapList(r is List ? r : asMap(r)['items']);
+  }
+
+  Future<void> createPlazaBan(Map<String, dynamic> body) =>
+      api.put('/admin/plaza/bans', body: body);
+
+  Future<void> deletePlazaBan(String id) =>
+      api.delete('/admin/plaza/bans/$id');
+
   /// v1.2.0：后端可升级版本列表。
   Future<List<Map<String, dynamic>>> upgradeVersions() async {
     final dynamic r = await api.get('/admin/upgrade/versions', silent: true);

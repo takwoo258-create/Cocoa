@@ -9,6 +9,7 @@ import { get, run } from '../db/index.js';
 import { nowIso, uuid, dayKey } from '../core/util.js';
 import env from '../env.js';
 import { getCharacter } from '../services/characters.js';
+import { generateAndSaveImage } from '../ai/image.js';
 
 const MAX_SIZE = 20 * 1024 * 1024;
 
@@ -167,6 +168,28 @@ export default function register() {
       );
 
       res.status(201).json({ id, url: `/api/media/${id}`, mime, size, kind, characterId, createdAt });
+    }),
+  );
+
+  // v1.5.1：按提示词生成图片（生图模型），仅返回媒体信息，不写入对话
+  r.post(
+    '/generate',
+    asyncHandler(async (req, res) => {
+      const prompt = String(req.body?.prompt || '').trim();
+      if (!prompt) throw badRequest('请填写画面描述', 'image_prompt_required');
+      const characterId = req.body?.characterId ? String(req.body.characterId) : null;
+      if (characterId) {
+        const character = getCharacter(req.userId, characterId, { includeArchived: true });
+        if (!character) throw notFound('角色不存在或不属于当前账号', 'character_not_found');
+      }
+      const media = await generateAndSaveImage(req.userId, {
+        characterId,
+        prompt,
+        size: req.body?.size,
+        style: req.body?.style,
+        quality: req.body?.quality,
+      });
+      res.status(201).json(media);
     }),
   );
 

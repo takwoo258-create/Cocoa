@@ -51,6 +51,7 @@ class ModelProfile {
         'model': model,
         'voice': voice,
         'contextWindow': contextWindow,
+        if (extra.isNotEmpty) 'extra': extra,
       };
 
   ModelProfile copyWith({
@@ -89,6 +90,7 @@ const List<String> kModelServiceGroups = <String>[
   'stt',
   'embedding',
   'search',
+  'image',
 ];
 
 const Map<String, String> kModelServiceLabels = <String, String>{
@@ -98,6 +100,7 @@ const Map<String, String> kModelServiceLabels = <String, String>{
   'stt': '语音识别',
   'embedding': '记忆嵌入',
   'search': '网页搜索',
+  'image': '生图模型',
 };
 
 String modelServiceLabel(String service, Map<String, dynamic> defaults) {

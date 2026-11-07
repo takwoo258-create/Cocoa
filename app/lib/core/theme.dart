@@ -82,13 +82,19 @@ ThemeData buildAppTheme({String? fontFamily, String motion = 'normal'}) {
       builders: <TargetPlatform, PageTransitionsBuilder>{
         TargetPlatform.android: motion == 'off'
             ? const _NoTransitionsBuilder()
-            : CocoaPageTransitionsBuilder(),
+            : (motion == 'reduced'
+                ? const _FadeTransitionsBuilder()
+                : CocoaPageTransitionsBuilder()),
         TargetPlatform.iOS: motion == 'off'
             ? const _NoTransitionsBuilder()
-            : CocoaPageTransitionsBuilder(),
+            : (motion == 'reduced'
+                ? const _FadeTransitionsBuilder()
+                : CocoaPageTransitionsBuilder()),
         TargetPlatform.macOS: motion == 'off'
             ? const _NoTransitionsBuilder()
-            : CocoaPageTransitionsBuilder(),
+            : (motion == 'reduced'
+                ? const _FadeTransitionsBuilder()
+                : CocoaPageTransitionsBuilder()),
       },
     ),
     inputDecorationTheme: InputDecorationTheme(
@@ -211,4 +217,25 @@ class _NoTransitionsBuilder extends PageTransitionsBuilder {
     Widget child,
   ) =>
       child;
+}
+
+
+class _FadeTransitionsBuilder extends PageTransitionsBuilder {
+  const _FadeTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    final Animation<double> curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOut,
+      reverseCurve: Curves.easeIn,
+    );
+    return FadeTransition(opacity: curved, child: child);
+  }
 }

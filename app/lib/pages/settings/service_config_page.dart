@@ -31,7 +31,11 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
     final AppConfig? cfg = AppScope.read(context).config;
     final List<String> list =
         asStringList(asMap(cfg?.defaults)['services']);
-    return list.isEmpty ? kModelServiceGroups : list;
+    final List<String> out = List<String>.of(
+      list.isEmpty ? kModelServiceGroups : list,
+    );
+    if (!out.contains('image')) out.add('image');
+    return out;
   }
 
   String _label(String service) {
@@ -205,6 +209,11 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
         TextEditingController(text: initial?.model ?? '');
     final TextEditingController voice =
         TextEditingController(text: initial?.voice ?? '');
+    final TextEditingController size = TextEditingController(
+      text: asString(initial?.extra['size'], '1024x1024'),
+    );
+    final TextEditingController style =
+        TextEditingController(text: asString(initial?.extra['style']));
     final TextEditingController contextCtrl = TextEditingController(
       text: (initial?.contextWindow ?? 0) > 0
           ? '${initial!.contextWindow}'
@@ -395,6 +404,23 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
                         decoration: const InputDecoration(labelText: '音色 voice'),
                       ),
                     ),
+                  if (service == 'image') ...<Widget>[
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: size,
+                      decoration: const InputDecoration(
+                        labelText: '尺寸 size',
+                        hintText: '1024x1024',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: style,
+                      decoration: const InputDecoration(
+                        labelText: '风格 style（可选）',
+                      ),
+                    ),
+                  ],
                   if (status.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 6),
@@ -445,6 +471,15 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
                         voice: voice.text.trim(),
                         contextWindow: int.tryParse(contextCtrl.text.trim()) ?? 0,
                         ready: initial?.ready ?? false,
+                        extra: service == 'image'
+                            ? <String, dynamic>{
+                                'size': size.text.trim().isEmpty
+                                    ? '1024x1024'
+                                    : size.text.trim(),
+                                if (style.text.trim().isNotEmpty)
+                                  'style': style.text.trim(),
+                              }
+                            : (initial?.extra ?? const <String, dynamic>{}),
                       ));
                     },
               child: const Text('保存'),
@@ -458,6 +493,8 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
     apiKey.dispose();
     model.dispose();
     voice.dispose();
+    size.dispose();
+    style.dispose();
     contextCtrl.dispose();
     return result;
   }
