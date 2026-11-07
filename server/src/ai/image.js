@@ -18,10 +18,10 @@ const EXT_BY_MIME = {
  * 生成一张图片并保存到媒体目录，登记 media 表。
  * 返回 { id, url, mime, size, kind, characterId, prompt, revisedPrompt, createdAt }
  */
-export async function generateAndSaveImage(userId, { characterId = null, prompt, size, style, quality, n = 1 } = {}) {
+export async function generateAndSaveImage(userId, { characterId = null, prompt, size, style, quality, n = 1, serviceConf = null } = {}) {
   const text = String(prompt || '').trim().slice(0, 4000);
   if (!text) throw badRequest('缺少画面描述', 'image_prompt_required');
-  const items = await generateImage(userId, { prompt: text, size, style, quality, n });
+  const items = await generateImage(userId, { prompt: text, size, style, quality, n, serviceConf });
   const first = items[0];
   if (!first?.buffer?.length) throw badRequest('生图服务没有返回图片', 'image_empty');
 

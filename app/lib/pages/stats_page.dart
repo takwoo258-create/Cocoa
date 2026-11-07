@@ -6,6 +6,7 @@ import '../core/api_client.dart';
 import '../core/app_state.dart';
 import '../core/constants.dart';
 import '../core/theme.dart';
+import '../core/motion.dart';
 import '../core/utils.dart';
 import '../models/character.dart';
 import '../models/stats_models.dart';
@@ -379,9 +380,12 @@ class _StatsPageState extends State<StatsPage> {
     }
     if (maxY <= 0) maxY = 100;
     final double interval = maxY / 4;
+    final AppState state = AppScope.read(context);
     return SizedBox(
       height: 190,
       child: BarChart(
+        duration:
+            motionDuration(state, const Duration(milliseconds: 180)),
         BarChartData(
           maxY: maxY * 1.18,
           minY: 0,

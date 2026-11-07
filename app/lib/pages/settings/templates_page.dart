@@ -167,6 +167,77 @@ class _TemplatesPageState extends State<TemplatesPage> {
     }
   }
 
+  Future<void> _batchShare() async {
+    if (_list.isEmpty) return;
+    final Set<String> selected = <String>{};
+    final List<CharacterTemplate>? picked =
+        await showDialog<List<CharacterTemplate>>(
+      context: context,
+      builder: (BuildContext ctx) => StatefulBuilder(
+        builder: (BuildContext ctx, StateSetter setSt) => AlertDialog(
+          title: const Text('批量分享模板'),
+          content: SizedBox(
+            width: 440,
+            child: ListView(
+              shrinkWrap: true,
+              children: _list
+                  .map(
+                    (CharacterTemplate t) => CheckboxListTile(
+                      dense: true,
+                      title: Text(t.name, style: const TextStyle(fontSize: 12)),
+                      value: selected.contains(t.id),
+                      onChanged: (bool? v) => setSt(() {
+                        if (v == true) {
+                          selected.add(t.id);
+                        } else {
+                          selected.remove(t.id);
+                        }
+                      }),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: selected.isEmpty
+                  ? null
+                  : () => Navigator.of(ctx).pop(
+                        _list.where((CharacterTemplate t) => selected.contains(t.id)).toList(),
+                      ),
+              child: const Text('下一步'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || picked.isEmpty || !mounted) return;
+    final Map<String, dynamic>? form = await showPlazaPublishDialog(
+      context,
+      kind: 'template',
+      title: '人设模板批量分享',
+    );
+    if (form == null) return;
+    final AppState state = AppScope.read(context);
+    int ok = 0;
+    int fail = 0;
+    for (final CharacterTemplate t in picked) {
+      try {
+        await state.templateService.publish(t.id, form);
+        ok++;
+      } catch (_) {
+        fail++;
+      }
+    }
+    if (mounted) {
+      showToast('批量分享完成：成功 $ok，失败 $fail', isError: fail > 0);
+    }
+  }
+
   Future<void> _delete(CharacterTemplate t) async {
     final bool ok = await confirmDialog(
       context,
@@ -200,6 +271,11 @@ class _TemplatesPageState extends State<TemplatesPage> {
             tooltip: '从角色导入',
             icon: const Icon(Icons.download_outlined, size: 20),
             onPressed: _import,
+          ),
+          IconButton(
+            tooltip: '批量分享',
+            icon: const Icon(Icons.public, size: 20),
+            onPressed: _batchShare,
           ),
         ],
       ),

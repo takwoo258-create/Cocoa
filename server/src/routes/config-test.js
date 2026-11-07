@@ -11,7 +11,8 @@ import { run } from '../db/index.js';
 import { nowIso, uuid, dayKey } from '../core/util.js';
 import env from '../env.js';
 import { synthesize, transcribe } from '../ai/provider.js';
-import { getUserApiRaw, DEFAULT_API } from '../services/settings.js';
+import { getUserApiRaw, DEFAULT_API, normalizeProfileStore } from '../services/settings.js';
+import { generateAndSaveImage } from '../ai/image.js';
 
 const MAX_AUDIO_SIZE = 20 * 1024 * 1024;
 const DEFAULT_TTS_TEXT = '你好呀，我是 Cocoa，这是一段语音合成测试。';
@@ -66,6 +67,8 @@ const AUDIO_EXT = {
   'audio/3gpp': '.3gp',
   'audio/flac': '.flac',
 };
+
+const AUDIO_MIME_BY_EXT = Object.fromEntries(Object.entries(AUDIO_EXT).map(([mime, ext]) => [ext, mime]));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -144,9 +147,15 @@ export default function register() {
       await runUpload(req, res);
       const file = req.file;
       if (!file || !file.buffer?.length) throw badRequest('请选择要识别的音频文件（字段名 file）', 'audio_required');
-      const mime = String(file.mimetype || '').toLowerCase();
+      let mime = String(file.mimetype || '').toLowerCase();
       if (!AUDIO_MIMES.has(mime)) {
-        throw badRequest('仅支持音频文件（mp3/wav/ogg/m4a/amr 等）', 'audio_mime_invalid');
+        // 部分客户端上传时不带 Content-Type，按扩展名兜底识别
+        const ext = path.extname(String(file.originalname || '')).toLowerCase();
+        const inferred = AUDIO_MIME_BY_EXT[ext] || AUDIO_MIME_BY_EXT[ext.replace('.jpeg', '.jpg')];
+        if (!inferred) {
+          throw badRequest('仅支持音频文件（mp3/wav/ogg/m4a/amr 等）', 'audio_mime_invalid');
+        }
+        mime = inferred;
       }
       ensureConfigured(req.userId, 'stt');
 
@@ -168,6 +177,40 @@ export default function register() {
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
+    }),
+  );
+
+  // v1.5.2：生图测试（使用指定配置或当前生效配置，生成一张小图并返回媒体地址）
+  r.post(
+    '/test-image',
+    asyncHandler(async (req, res) => {
+      const prompt = String(req.body?.prompt || '').trim() || '一只坐在窗台上的猫，水彩画';
+      const profileId = String(req.body?.profileId || '').trim();
+      const store = normalizeProfileStore(getUserApiRaw(req.userId));
+      let conf = null;
+      if (profileId) {
+        const found = (store.image || []).find((p) => p.id === profileId);
+        if (found) conf = { ...found, extra: { ...(found.extra || {}) } };
+      }
+      const draft = req.body?.draft && typeof req.body.draft === 'object' ? req.body.draft : req.body;
+      if (draft && typeof draft.baseUrl === 'string' && draft.baseUrl.trim()) {
+        const keepKey = !draft.apiKey || draft.apiKey === '****' || draft.apiKey === '••••••••';
+        conf = {
+          ...(conf || {}),
+          baseUrl: draft.baseUrl.trim(),
+          apiKey: keepKey ? conf?.apiKey || '' : String(draft.apiKey).trim(),
+          model: String(draft.model || conf?.model || '').trim(),
+          extra: { ...(conf?.extra || {}), ...(draft.extra && typeof draft.extra === 'object' ? draft.extra : {}) },
+        };
+      }
+      if (!conf || (!conf.apiKey && !conf.baseUrl)) {
+        throw new AppError(400, 'api_not_configured', '尚未配置「生图模型」，请先填写 API Key 与地址');
+      }
+      const started = Date.now();
+      const size = typeof req.body?.size === 'string' && req.body.size.trim() ? req.body.size.trim() : conf.extra?.size;
+      const media = await generateAndSaveImage(req.userId, { prompt, size, serviceConf: conf });
+      const elapsedMs = Date.now() - started;
+      res.json({ ok: true, elapsedMs, latencyMs: elapsedMs, prompt, model: conf.model || '', ...media });
     }),
   );
 

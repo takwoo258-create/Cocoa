@@ -70,8 +70,8 @@ class _UpdateDialogState extends State<UpdateDialog> {
       final int idx = all.indexWhere(
         (LatestVersion v) => v.version == req.version || v.tag == req.version,
       );
-      // releases 高版本在前：只保留 required 之前的更高版本。
-      if (idx >= 0) return all.sublist(0, idx);
+      // 强制场景：包含 requiredVersion 本身与所有更高版本，默认选 required。
+      if (idx >= 0) return all.sublist(0, idx + 1);
     }
     return all;
   }
@@ -90,10 +90,12 @@ class _UpdateDialogState extends State<UpdateDialog> {
   @override
   void initState() {
     super.initState();
-    _selectedVersion =
-        check.latest.version.isNotEmpty ? check.latest.version : '';
-    if (options.isEmpty && required != null) {
-      _selectedVersion = required!.version;
+    final LatestVersion? req = required;
+    _selectedVersion = force && req != null
+        ? req.version
+        : (check.latest.version.isNotEmpty ? check.latest.version : '');
+    if (options.isEmpty && req != null) {
+      _selectedVersion = req.version;
     }
   }
 
@@ -243,7 +245,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
                           value: v.version,
                           child: Text(
                             '${v.displayLabel}'
-                            '${v.version == check.latest.version ? '（最新版）' : ''}',
+                            '${v.version == required?.version ? '（需要更新）' : (v.version == check.latest.version ? '（最新版）' : '')}',
                             style: const TextStyle(fontSize: 12.5),
                           ),
                         ),

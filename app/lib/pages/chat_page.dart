@@ -12,6 +12,7 @@ import '../core/constants.dart';
 import '../core/global.dart';
 import '../core/json_utils.dart';
 import '../core/layout.dart';
+import '../core/motion.dart';
 import '../core/theme.dart';
 import '../core/utils.dart';
 import '../core/ws_service.dart';
@@ -893,10 +894,12 @@ class _TypingDotsState extends State<_TypingDots>
   @override
   void initState() {
     super.initState();
+    final AppState state = AppScope.read(context);
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat();
+      duration: motionDuration(state, const Duration(milliseconds: 900)),
+    );
+    if (state.motion != 'off') _controller.repeat();
   }
 
   @override

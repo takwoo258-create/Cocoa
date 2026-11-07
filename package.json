@@ -1,6 +1,6 @@
 {
   "name": "cocoa",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "description": "Cocoa — virtual agent companion system (backend + Flutter client)",
   "license": "GPL-3.0-or-later",

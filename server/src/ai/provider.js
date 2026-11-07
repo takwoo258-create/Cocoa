@@ -345,8 +345,8 @@ export async function synthesize(userId, text, { voice } = {}) {
 }
 
 /** 生图：OpenAI 兼容 /v1/images/generations（支持 b64_json 与 URL 两种返回） */
-export async function generateImage(userId, { prompt, size, n = 1, style, quality, timeoutMs = 180_000 } = {}) {
-  const conf = serviceConfig(userId, 'image');
+export async function generateImage(userId, { prompt, size, n = 1, style, quality, timeoutMs = 180_000, serviceConf = null } = {}) {
+  const conf = serviceConf || serviceConfig(userId, 'image');
   const text = String(prompt || '').trim().slice(0, 4000);
   if (!text) throw badRequest('缺少画面描述', 'image_prompt_required');
   const base = (conf.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');

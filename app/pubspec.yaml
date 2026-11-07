@@ -1,7 +1,7 @@
 name: cocoa
 description: Cocoa 虚拟智能体陪伴系统 Android 客户端
 publish_to: 'none'
-version: 1.5.1+9
+version: 1.5.2+10
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -12,6 +12,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
   http: ^1.2.2
+  http_parser: ^4.0.2
   web_socket_channel: ^3.0.1
   shared_preferences: ^2.3.2
   flutter_secure_storage: ^9.2.2
@@ -28,3 +29,11 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  fonts:
+    - family: Xiaolai
+      fonts:
+        - asset: assets/fonts/Xiaolai-Regular.ttf
+
+  assets:
+    - assets/fonts/Xiaolai-Regular.ttf

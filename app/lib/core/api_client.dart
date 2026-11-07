@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 typedef ErrorCallback = void Function(String message);
 
@@ -193,13 +194,18 @@ class ApiClient {
     required String field,
     Map<String, String> fields = const <String, String>{},
     bool silent = false,
+    String? contentType,
   }) {
     return _run(() async {
       final http.MultipartRequest req =
           http.MultipartRequest('POST', buildUri(path));
       req.headers.addAll(authHeaders);
       req.fields.addAll(fields);
-      req.files.add(await http.MultipartFile.fromPath(field, filePath));
+      req.files.add(await http.MultipartFile.fromPath(
+        field,
+        filePath,
+        contentType: contentType == null ? null : MediaType.parse(contentType),
+      ));
       final http.StreamedResponse streamed = await req.send();
       return http.Response.fromStream(streamed);
     }, silent: silent);
@@ -212,13 +218,19 @@ class ApiClient {
     required String field,
     Map<String, String> fields = const <String, String>{},
     bool silent = false,
+    String? contentType,
   }) {
     return _run(() async {
       final http.MultipartRequest req =
           http.MultipartRequest('POST', buildUri(path));
       req.headers.addAll(authHeaders);
       req.fields.addAll(fields);
-      req.files.add(http.MultipartFile.fromBytes(field, bytes, filename: filename));
+      req.files.add(http.MultipartFile.fromBytes(
+        field,
+        bytes,
+        filename: filename,
+        contentType: contentType == null ? null : MediaType.parse(contentType),
+      ));
       final http.StreamedResponse streamed = await req.send();
       return http.Response.fromStream(streamed);
     }, silent: silent);

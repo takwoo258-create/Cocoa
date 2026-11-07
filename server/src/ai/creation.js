@@ -426,20 +426,24 @@ async function writeDiary(userId, characterId, character, settings, day) {
   return { bookId, type: 'diary', day, updated: false, words: meta.words, title, sessionId: conv.id };
 }
 
-async function writeSerial(userId, characterId, character, settings, type) {
+async function writeSerial(userId, characterId, character, settings, type, seriesIdOverride = null) {
   const tags = (Array.isArray(settings.creationTags) ? settings.creationTags : [])
     .map((t) => String(t || '').trim())
     .filter(Boolean)
     .slice(0, 8);
   const day = dayKey();
-  const seriesId = type === 'novel' ? `ser_${characterId}_novel` : `ser_${characterId}_essay_${uuid().replace(/-/g, '').slice(0, 8)}`;
+  // v1.5.2：散文归入同一合集（可指定 seriesId），但每篇独立会话、独立成篇
+  const seriesId = type === 'novel'
+    ? `ser_${characterId}_novel`
+    : (String(seriesIdOverride || '').trim() || `ser_${characterId}_essay`);
   const titleKey = type === 'novel' ? `novel:${seriesId}` : `essay:${seriesId}`;
-  const conv = ensureCreationConversation(userId, characterId, { titleKey });
+  const conv = ensureCreationConversation(userId, characterId, {
+    titleKey: type === 'novel' ? titleKey : `${titleKey}:${uuid().replace(/-/g, '').slice(0, 8)}`,
+  });
 
-  // 连载章节数：小说按 series 累计，散文每篇独立
-  const chapterNo = type === 'novel'
-    ? Number(get('SELECT COUNT(*) n FROM books WHERE user_id = ? AND character_id = ? AND series_id = ?', userId, characterId, seriesId)?.n || 0) + 1
-    : 1;
+  // 章节序号：小说与散文合集都按 series 累计（散文正文仍互不承接）
+  const chapterNo =
+    Number(get('SELECT COUNT(*) n FROM books WHERE user_id = ? AND character_id = ? AND series_id = ?', userId, characterId, seriesId)?.n || 0) + 1;
   const previousRow = get(
     type === 'novel'
       ? "SELECT * FROM books WHERE user_id = ? AND character_id = ? AND type = 'novel' AND series_id = ? ORDER BY created_at DESC LIMIT 1"
@@ -572,7 +576,7 @@ export async function runCreation(job, payload = {}) {
     const result =
       type === 'diary'
         ? await writeDiary(userId, characterId, character, settings, dayKey())
-        : await writeSerial(userId, characterId, character, settings, type);
+        : await writeSerial(userId, characterId, character, settings, type, body.seriesId || null);
 
     if (!result) {
       log.warn('创作结果为空，未写入书架', { userId, characterId, type });

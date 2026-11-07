@@ -518,3 +518,9 @@ WS 事件：`plaza_used`、`plaza_quota`、`plaza_expiring`、`plaza_expired`、
 - `POST /api/media/generate`（登录）：`{ prompt, characterId?, size?, style?, quality? }` → `201 { id, url, mime, size, kind:"image", prompt, revisedPrompt }`；未配置生图模型时返回 400 `api_not_configured`。
 - 对话回复协议新增 `{"type":"image","content":"画面描述"}`：服务端生成图片后落库为 `kind="image"` 的 agent 消息，`meta` 带 `{mediaId,url,mime,generated:true,prompt}`；失败降级为文本。
 - 图片进入上下文时只使用描述文本，不写入二进制。
+
+### 16.9 v1.5.2 测试接口
+
+- `POST /api/config/test-image`（登录）：`{ profileId?, prompt?, size?, baseUrl?, apiKey?, model? }` → `{ ok, elapsedMs, prompt, model, id, url, mime, size }`；未配置生图模型返回 400 `api_not_configured`。
+- `POST /api/config/test-stt`（multipart，字段 `file`）：音频 MIME 缺失时按文件扩展名识别；失败返回 400 `audio_mime_invalid` 或 502 上游错误详情。
+- 需要更新时，`/api/version/updates` 的 `requiredVersion` 与更高版本会同时返回，客户端可在满足最低版本的前提下选择更高版本。

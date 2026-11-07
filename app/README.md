@@ -109,6 +109,16 @@ lib/
 - 动效「减弱」改为页面淡入。
 - 版本 1.5.1+9。
 
+## v1.5.2 增量
+
+- 默认字体 Xiaolai（assets/fonts），主题仍可切系统/导入字体。
+- STT 测试改 wav 并带 audio/wav MIME；上传补正确 MIME；错误展示后端 message。
+- 生图配置 quality + 测试生图（图片、模型、耗时）。
+- 强制更新可选 required 与更高版本，默认 required，不可跳过。
+- 模型配置/人设模板批量公开/分享。
+- 减弱动效：页面淡入，主要动画时长减半；关闭无过渡。
+- 版本 1.5.2+10。
+
 ## 构建
 
 工具链（本机）：Flutter 3.47.9 / Dart 3.13.7、AGP 9.1.0、Gradle 9.3.1、JDK 17、Android SDK 36。

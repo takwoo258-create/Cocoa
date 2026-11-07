@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_state.dart';
 import '../../core/global.dart';
+import '../../core/api_client.dart';
 import '../../core/json_utils.dart';
 import '../../core/layout.dart';
 import '../../core/theme.dart';
@@ -214,6 +215,7 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
     );
     final TextEditingController style =
         TextEditingController(text: asString(initial?.extra['style']));
+    String quality = asString(initial?.extra['quality'], 'standard');
     final TextEditingController contextCtrl = TextEditingController(
       text: (initial?.contextWindow ?? 0) > 0
           ? '${initial!.contextWindow}'
@@ -420,6 +422,23 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
                         labelText: '风格 style（可选）',
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      initialValue: quality,
+                      decoration: const InputDecoration(labelText: '质量 quality'),
+                      items: const <DropdownMenuItem<String>>[
+                        DropdownMenuItem<String>(
+                          value: 'standard',
+                          child: Text('standard'),
+                        ),
+                        DropdownMenuItem<String>(
+                          value: 'high',
+                          child: Text('high'),
+                        ),
+                      ],
+                      onChanged: (String? v) =>
+                          setSt(() => quality = v ?? 'standard'),
+                    ),
                   ],
                   if (status.isNotEmpty)
                     Padding(
@@ -478,6 +497,7 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
                                     : size.text.trim(),
                                 if (style.text.trim().isNotEmpty)
                                   'style': style.text.trim(),
+                                'quality': quality,
                               }
                             : (initial?.extra ?? const <String, dynamic>{}),
                       ));
@@ -576,6 +596,187 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
     }
   }
 
+  Future<void> _testImage(ModelProfile p) async {
+    final AppState state = AppScope.read(context);
+    final TextEditingController prompt = TextEditingController(
+      text: '一只坐在窗台上的猫，水彩',
+    );
+    final String? text = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('测试生图'),
+        content: TextField(
+          controller: prompt,
+          maxLines: 3,
+          decoration: const InputDecoration(labelText: '提示词'),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(prompt.text.trim()),
+            child: const Text('生成'),
+          ),
+        ],
+      ),
+    );
+    prompt.dispose();
+    if (text == null || text.isEmpty) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext ctx) => const AlertDialog(
+        content: Row(
+          children: <Widget>[
+            CircularProgressIndicator(strokeWidth: 2),
+            SizedBox(width: 12),
+            Text('生成中…'),
+          ],
+        ),
+      ),
+    );
+    try {
+      final Map<String, dynamic> r = await state.configService.testImage(
+        profileId: p.id,
+        prompt: text,
+        size: asString(p.extra['size'], '1024x1024'),
+      );
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      final String raw = asString(r['url'], asString(r['image']));
+      final String url = raw.startsWith('http')
+          ? raw
+          : '${ApiClient.normalizeBase(state.baseUrl)}$raw';
+      await showDialog<void>(
+        context: context,
+        builder: (BuildContext ctx) => AlertDialog(
+          title: const Text('生图结果'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (url.isNotEmpty)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.network(
+                      url,
+                      headers: state.token == null
+                          ? null
+                          : <String, String>{
+                              'Authorization': 'Bearer ${state.token}',
+                            },
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const Text('图片加载失败'),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                Text(
+                  '模型 ${asString(r['model'], p.model)} · 耗时 ${asInt(r['latencyMs'])}ms',
+                  style: const TextStyle(fontSize: 10.5),
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        showToast('生图失败：$e', isError: true);
+      }
+    }
+  }
+
+  Future<void> _batchPublish(String service) async {
+    final List<ModelProfile> list =
+        List<ModelProfile>.of(_profiles[service] ?? const <ModelProfile>[]);
+    if (list.isEmpty) return;
+    final Set<String> selected = <String>{};
+    final List<ModelProfile>? picked = await showDialog<List<ModelProfile>>(
+      context: context,
+      builder: (BuildContext ctx) => StatefulBuilder(
+        builder: (BuildContext ctx, StateSetter setSt) => AlertDialog(
+          title: Text('批量公开${_label(service)}'),
+          content: SizedBox(
+            width: 440,
+            child: ListView(
+              shrinkWrap: true,
+              children: list
+                  .map(
+                    (ModelProfile p) => CheckboxListTile(
+                      dense: true,
+                      title: Text(p.name, style: const TextStyle(fontSize: 12)),
+                      subtitle: Text(p.model,
+                          style: const TextStyle(fontSize: 10)),
+                      value: selected.contains(p.id),
+                      onChanged: (bool? v) => setSt(() {
+                        if (v == true) {
+                          selected.add(p.id);
+                        } else {
+                          selected.remove(p.id);
+                        }
+                      }),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: selected.isEmpty
+                  ? null
+                  : () => Navigator.of(ctx).pop(
+                        list
+                            .where((ModelProfile p) => selected.contains(p.id))
+                            .toList(),
+                      ),
+              child: const Text('下一步'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || picked.isEmpty || !mounted) return;
+    final Map<String, dynamic>? form = await showPlazaPublishDialog(
+      context,
+      kind: 'model',
+      title: '${_label(service)}公开',
+    );
+    if (form == null) return;
+    final AppState state = AppScope.read(context);
+    int ok = 0;
+    int fail = 0;
+    for (final ModelProfile p in picked) {
+      try {
+        if (_active[service] != p.id) await _setActive(service, p.id);
+        await state.plazaService.publish(<String, dynamic>{
+          'kind': 'model',
+          'services': <String>[service],
+          ...form,
+        }, global: false);
+        ok++;
+      } catch (_) {
+        fail++;
+      }
+    }
+    if (mounted) {
+      showToast('批量公开完成：成功 $ok，失败 $fail', isError: fail > 0);
+    }
+  }
+
   Widget _profileCard(String service, ModelProfile p) {
     final ProviderMeta? meta =
         AppScope.read(context).config?.providerMeta[service];
@@ -664,6 +865,15 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
                 ),
                 child: const Text('公开使用权'),
               ),
+              if (service == 'image')
+                TextButton(
+                  onPressed: () => _testImage(p),
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 28),
+                    textStyle: const TextStyle(fontSize: 10.5),
+                  ),
+                  child: const Text('测试生图'),
+                ),
               const Spacer(),
               IconButton(
                 visualDensity: VisualDensity.compact,
@@ -692,10 +902,20 @@ class _ServiceConfigPageState extends State<ServiceConfigPage> {
         _profiles[service] ?? const <ModelProfile>[];
     return SectionCard(
       title: _label(service),
-      trailing: IconButton(
-        tooltip: '新建配置',
-        icon: const Icon(Icons.add_circle_outline, size: 19),
-        onPressed: () => _edit(service),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          IconButton(
+            tooltip: '批量公开',
+            icon: const Icon(Icons.public, size: 18),
+            onPressed: list.isEmpty ? null : () => _batchPublish(service),
+          ),
+          IconButton(
+            tooltip: '新建配置',
+            icon: const Icon(Icons.add_circle_outline, size: 19),
+            onPressed: () => _edit(service),
+          ),
+        ],
       ),
       child: list.isEmpty
           ? const Text(

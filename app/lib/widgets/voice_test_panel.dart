@@ -120,9 +120,9 @@ class _VoiceTestPanelState extends State<VoiceTestPanel> {
       }
       final Directory dir = await getTemporaryDirectory();
       final String path =
-          '${dir.path}/cocoa_stt_${DateTime.now().millisecondsSinceEpoch}.m4a';
+          '${dir.path}/cocoa_stt_${DateTime.now().millisecondsSinceEpoch}.wav';
       await _recorder!.start(
-        const rec.RecordConfig(encoder: rec.AudioEncoder.aacLc),
+        const rec.RecordConfig(encoder: rec.AudioEncoder.wav),
         path: path,
       );
       _setStatus('录音中，请说一句话（3 秒）…', true);
@@ -133,7 +133,7 @@ class _VoiceTestPanelState extends State<VoiceTestPanel> {
         return;
       }
       _setStatus('识别中…', true);
-      final Map<String, dynamic> r = await state.configService.testStt(filePath);
+      final Map<String, dynamic> r = await state.configService.testStt(filePath, contentType: 'audio/wav');
       final String text = asString(r['text']);
       if (!asBool(r['ok'])) {
         _setStatus('识别失败', false);

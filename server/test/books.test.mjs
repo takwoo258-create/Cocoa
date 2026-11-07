@@ -532,7 +532,7 @@ describe('小说与散文 v1.5', () => {
     );
     assert.equal(first.ok, true, JSON.stringify(first));
     assert.ok(first.words >= creation.CREATION_MIN_CHARS.essay, `散文字数不足: ${first.words}`);
-    assert.ok(first.seriesId.startsWith(`ser_${charA.id}_essay_`));
+    assert.equal(first.seriesId, `ser_${charA.id}_essay`);
 
     fake.state.essayQueue = [longText('第二篇从一杯凉掉的茶开始。', 900)];
     const second = await creation.runCreation(
@@ -541,7 +541,7 @@ describe('小说与散文 v1.5', () => {
     );
     assert.equal(second.ok, true);
     assert.notEqual(second.sessionId, first.sessionId, '散文每篇应使用独立会话');
-    assert.notEqual(second.seriesId, first.seriesId);
+    assert.equal(second.seriesId, first.seriesId, '散文应归入同一合集');
     const convs = all(
       "SELECT id FROM conversations WHERE user_id = ? AND character_id = ? AND kind = 'creation' AND title LIKE 'creation:essay:%'",
       userA.id,

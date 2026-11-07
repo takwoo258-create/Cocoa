@@ -165,13 +165,18 @@ class _ThemePageState extends State<ThemePage> {
                           (state.fontPath?.isNotEmpty ?? false)
                       ? 'CocoaImported'
                       : (state.fontFamily == 'serif' ||
-                              state.fontFamily == 'monospace'
+                              state.fontFamily == 'monospace' ||
+                              state.fontFamily == 'system_native'
                           ? state.fontFamily
                           : 'system'),
                   decoration: const InputDecoration(labelText: '字体'),
                   items: <DropdownMenuItem<String>>[
                     const DropdownMenuItem<String>(
                       value: 'system',
+                      child: Text('小赖（默认）', style: TextStyle(fontSize: 12)),
+                    ),
+                    const DropdownMenuItem<String>(
+                      value: 'system_native',
                       child: Text('系统字体', style: TextStyle(fontSize: 12)),
                     ),
                     const DropdownMenuItem<String>(

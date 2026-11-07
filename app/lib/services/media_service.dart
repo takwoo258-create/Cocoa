@@ -16,6 +16,7 @@ class MediaService {
       '/media',
       filePath: filePath,
       field: 'file',
+      contentType: _mime(filePath),
       fields: <String, String>{
         'kind': kind,
         if (characterId != null && characterId.isNotEmpty)
@@ -36,6 +37,7 @@ class MediaService {
       bytes: bytes,
       filename: filename,
       field: 'file',
+      contentType: _mime(filename),
       fields: <String, String>{
         'kind': kind,
         if (characterId != null && characterId.isNotEmpty)
@@ -48,4 +50,17 @@ class MediaService {
   Uri mediaUri(String id) => api.mediaUri(id);
 
   Map<String, String> get headers => api.mediaHeaders;
+}
+
+
+String? _mime(String path) {
+  final String p = path.toLowerCase();
+  if (p.endsWith('.png')) return 'image/png';
+  if (p.endsWith('.webp')) return 'image/webp';
+  if (p.endsWith('.gif')) return 'image/gif';
+  if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg';
+  if (p.endsWith('.wav')) return 'audio/wav';
+  if (p.endsWith('.m4a')) return 'audio/mp4';
+  if (p.endsWith('.mp3')) return 'audio/mpeg';
+  return null;
 }

@@ -78,6 +78,22 @@ class ConfigService {
     return asMap(r);
   }
 
+  /// v1.5.2：测试生图。
+  Future<Map<String, dynamic>> testImage({
+    required String profileId,
+    required String prompt,
+    String size = '1024x1024',
+  }) async {
+    return asMap(await api.post(
+      '/config/test-image',
+      body: <String, dynamic>{
+        'profileId': profileId,
+        'prompt': prompt,
+        'size': size,
+      },
+    ));
+  }
+
   /// v1.5.0：按配置测试 OpenAI 兼容端点（GET /models）。
   Future<Map<String, dynamic>> testProfile({
     required String baseUrl,
@@ -193,7 +209,10 @@ class ConfigService {
   }
 
   /// v1.2.0：STT 测试（multipart file）。
-  Future<Map<String, dynamic>> testStt(String filePath) async {
+  Future<Map<String, dynamic>> testStt(
+    String filePath, {
+    String contentType = 'audio/wav',
+  }) async {
     return asMap(await api.upload(
       '/config/test-stt',
       filePath: filePath,

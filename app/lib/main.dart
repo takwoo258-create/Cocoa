@@ -63,8 +63,10 @@ class _CocoaAppState extends State<CocoaApp> {
         scaffoldMessengerKey: appMessengerKey,
         theme: buildAppTheme(
           fontFamily: _state.fontFamily == 'system'
-              ? null
-              : _state.fontFamily,
+              ? 'Xiaolai'
+              : (_state.fontFamily == 'system_native'
+                  ? null
+                  : _state.fontFamily),
           motion: _state.motion,
         ),
         locale: const Locale('zh', 'CN'),
@@ -82,6 +84,7 @@ class _CocoaAppState extends State<CocoaApp> {
           child: MediaQuery(
             data: MediaQuery.of(context).copyWith(
               textScaler: TextScaler.linear(_state.fontScale),
+              disableAnimations: _state.motion == 'off',
             ),
             child: child ?? const SizedBox.shrink(),
           ),

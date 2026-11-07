@@ -76,7 +76,9 @@ Future<bool> loadImportedFont(String path) async {
 
 /// 预览文字用。
 TextStyle appearancePreviewStyle(AppState state) => TextStyle(
-      fontFamily: state.fontFamily == 'system' ? null : state.fontFamily,
+      fontFamily: state.fontFamily == 'system'
+          ? 'Xiaolai'
+          : (state.fontFamily == 'system_native' ? null : state.fontFamily),
       fontSize: 16,
       height: 1.6,
       color: AppColors.ink,
