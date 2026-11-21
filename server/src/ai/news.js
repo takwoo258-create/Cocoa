@@ -10,6 +10,7 @@ import logger from '../core/logger.js';
 import { chatText } from './provider.js';
 import { recordUsage } from './usage.js';
 import { getCharacter, getSettings } from '../services/characters.js';
+import { integrationsEnabled } from '../services/integrations.js';
 import {
   jobContext,
   limitState,
@@ -317,6 +318,10 @@ export async function runNews(job, payload = {}) {
     if (character.settings?.enabled === false) {
       log.debug('角色已关闭，跳过新闻阅读', { userId, characterId });
       return { skipped: true, reason: 'character_disabled' };
+    }
+    if (!integrationsEnabled()) {
+      log.debug('集成服务已关闭，跳过新闻阅读', { userId, characterId });
+      return { skipped: true, reason: 'integrations_disabled' };
     }
     const limit = limitState(userId);
     if (limit.state !== 'ok') {

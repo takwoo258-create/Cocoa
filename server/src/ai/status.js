@@ -13,7 +13,7 @@ import { parseReply, extractJson } from './reply.js';
 import { ensureBackgroundConversation, limitState } from './context.js';
 import { isCharacterActiveById } from './activity.js';
 import * as defaultProvider from './provider.js';
-import { getWeatherSafe, weatherPrompt } from '../services/integrations.js';
+import { getWeatherSafe, weatherPrompt, integrationsEnabled } from '../services/integrations.js';
 import logger from '../core/logger.js';
 
 export const SLEEP_SUFFIX = '若强行叫醒的话，可能会带来不必要的麻烦哦';
@@ -37,6 +37,7 @@ export function clearWeatherCache() {
 
 export async function cachedWeatherPrompt(settings = {}, { fetchIfMissing = true, fetcher = weatherPrompt, ttlMs = WEATHER_TTL_MS } = {}) {
   if (process.env.COCOA_DISABLE_WEATHER === '1') return '';
+  if (!integrationsEnabled()) return '';
   const city = String(settings?.weatherCity || '宣城').trim().slice(0, 32) || '宣城';
   const hit = weatherCache.get(city);
   if (hit && Date.now() - hit.at < ttlMs) return hit.prompt;

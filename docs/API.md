@@ -535,6 +535,7 @@ WS 事件：`plaza_used`、`plaza_quota`、`plaza_expiring`、`plaza_expired`、
   - 优先级：管理端配置 → 环境变量 `UAPI_KEY`/`COCOA_UAPI_KEY` → `COCOA_UAPI_ENV` 指向的文件。
 - `GET /api/admin/settings` 的 `integrations` 返回 `uapiKeySet`、`uapiKeyMasked`、`uapiKeySource`（`admin|env|file|none`）、`base`、`defaultCity`、`hotboardTypes`。
 - `POST /api/admin/integrations/test`：`{ kind: "weather" | "hotboard" }` → 真实请求一次上游，返回 `{ ok, kind, elapsedMs, base, keySource, sample }`，绕过缓存。
+- 总开关 `integrations.enabled`（默认 true）：关闭后不发起任何上游请求，`/api/integrations/weather|hotboard` 与 `/api/admin/integrations/test` 返回 503 `integrations_disabled`；角色状态不再注入天气，新闻任务跳过（`reason:"integrations_disabled"`）。`/api/integrations/status` 与 `GET /api/admin/settings` 均返回 `enabled`。
 
 **邮件模板**（管理员，按场景分别配置）：
 

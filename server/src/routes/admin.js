@@ -491,6 +491,7 @@ export default function register() {
         lastAutoUpgradeTag: update.lastAutoUpgradeTag || null,
       },
       integrations: {
+        enabled: integrationStatus().enabled,
         uapiKeySet: Boolean(integrations.uapiKey),
         uapiKeyMasked: maskSecret(integrations.uapiKey),
         uapiKeySource: integrationStatus().uapiKeySource,
@@ -513,7 +514,7 @@ export default function register() {
       ready: {
         smtp: Boolean(smtp.host && smtp.user),
         onebot: Boolean(onebot.token || onebot.selfId),
-        integrations: Boolean(integrations.uapiKey) || Boolean(process.env.UAPI_KEY),
+        integrations: integrationStatus().enabled && (Boolean(integrations.uapiKey) || Boolean(process.env.UAPI_KEY)),
       },
     });
   });
@@ -549,6 +550,9 @@ export default function register() {
     if (body.integrations && typeof body.integrations === 'object') {
       submitted.push('integrations');
       const patch = {};
+      if (body.integrations.enabled !== undefined) {
+        patch.enabled = Boolean(body.integrations.enabled);
+      }
       if (typeof body.integrations.uapiKey === 'string') {
         if (!KEEP.has(body.integrations.uapiKey)) {
           patch.uapiKey = body.integrations.uapiKey.trim().slice(0, 200);
@@ -638,7 +642,7 @@ export default function register() {
       })(),
       integrations: (() => {
         const i = getAdminSetting('integrations', {}) || {};
-        return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey), uapiKeySource: integrationStatus().uapiKeySource, base: integrationStatus().base };
+        return { enabled: integrationStatus().enabled, uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey), uapiKeySource: integrationStatus().uapiKeySource, base: integrationStatus().base };
       })(),
       systemModels: getSystemModelsPublic(),
       mailTemplates: getAdminSetting('mailTemplates', {}) || {},
@@ -657,7 +661,7 @@ export default function register() {
         })(),
         integrations: (() => {
           const i = getAdminSetting('integrations', {}) || {};
-          return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey), uapiKeySource: integrationStatus().uapiKeySource, base: integrationStatus().base };
+          return { enabled: integrationStatus().enabled, uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey), uapiKeySource: integrationStatus().uapiKeySource, base: integrationStatus().base };
         })(),
         mailTemplates: getAdminSetting('mailTemplates', {}) || {},
         systemModels: getSystemModelsPublic(),

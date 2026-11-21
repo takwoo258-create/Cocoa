@@ -16,6 +16,27 @@ export const DEFAULT_CITY = '宣城';
 export const HOTBOARD_TYPES = ['weibo', 'zhihu', 'douyin', 'bilibili', 'toutiao', 'baidu'];
 
 const cache = new Map(); // key -> { at, data, ttl }
+
+/**
+ * 集成服务总开关（管理端 integrations.enabled；未设置时由部署环境 UAPI_ENABLED 决定，默认开启）。
+ * 关闭后不发起任何上游请求，缓存与相关能力一律按不可用处理。
+ */
+export function integrationsEnabled() {
+  let cfg = {};
+  try {
+    cfg = getAdminSetting('integrations', {}) || {};
+  } catch {
+    cfg = {};
+  }
+  if (cfg.enabled !== undefined && cfg.enabled !== null) return Boolean(cfg.enabled);
+  const envFlag = String(process.env.UAPI_ENABLED || process.env.COCOA_UAPI_ENABLED || '').trim().toLowerCase();
+  if (envFlag) return !['0', 'false', 'off', 'no'].includes(envFlag);
+  return true;
+}
+
+export function assertIntegrationsEnabled() {
+  if (!integrationsEnabled()) throw new AppError(503, 'integrations_disabled', '集成服务已在后台关闭');
+}
 let fetchImpl = null;
 let envKeyCache = { at: 0, value: '' };
 
@@ -97,6 +118,7 @@ export function uapiKeySource() {
 
 export function integrationStatus() {
   return {
+    enabled: integrationsEnabled(),
     uapiKeySet: Boolean(uapiKey()),
     uapiKeySource: uapiKeySource(),
     base: uapiBase(),
@@ -107,6 +129,7 @@ export function integrationStatus() {
 
 /** 连通性测试：真实请求一次天气/热榜（绕过缓存） */
 export async function testIntegration(kind = 'weather') {
+  assertIntegrationsEnabled();
   const started = Date.now();
   if (kind === 'hotboard') {
     const data = await getHotboard('weibo', { force: true });
@@ -220,6 +243,7 @@ function shapeHotboard(raw, type) {
 
 /** 天气（10 分钟缓存）；失败抛 502，旧缓存保留 */
 export async function getWeather(city = DEFAULT_CITY, { force = false } = {}) {
+  assertIntegrationsEnabled();
   const name = String(city || DEFAULT_CITY).trim().slice(0, 32) || DEFAULT_CITY;
   if (!name) throw badRequest('城市不能为空', 'city_required');
   const key = `weather:${name}`;
@@ -236,6 +260,7 @@ export async function getWeather(city = DEFAULT_CITY, { force = false } = {}) {
 
 /** 热榜（5 分钟缓存）；失败抛 502，旧缓存保留 */
 export async function getHotboard(type = 'weibo', { force = false } = {}) {
+  assertIntegrationsEnabled();
   const source = String(type || 'weibo').trim().toLowerCase();
   if (!HOTBOARD_TYPES.includes(source)) {
     throw badRequest(`热榜类型仅支持 ${HOTBOARD_TYPES.join('/')}`, 'hotboard_type_invalid');
@@ -284,4 +309,4 @@ export async function hotboardPrompt(type = 'weibo', limit = 5) {
   return hot.items.slice(0, Math.max(1, Math.min(20, limit))).map((i) => `${i.rank}. ${i.title}`).join('\n');
 }
 
-export default { getWeather, getHotboard, getWeatherSafe, getHotboardSafe, weatherPrompt, hotboardPrompt, uapiKey, uapiKeySource, uapiBase, integrationStatus, testIntegration };
+export default { getWeather, getHotboard, getWeatherSafe, getHotboardSafe, weatherPrompt, hotboardPrompt, uapiKey, uapiKeySource, uapiBase, integrationStatus, testIntegration, integrationsEnabled };

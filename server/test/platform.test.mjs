@@ -852,3 +852,33 @@ test('邮件模板：分类默认值、覆盖、预览与测试发送结果', as
   assert.equal(sendTest.json.ok, false);
   assert.equal(sendTest.json.reason, 'smtp_not_configured');
 });
+
+test('集成总开关：关闭后不发起上游请求，恢复后可用', async () => {
+  const off = await api('/api/admin/settings', { method: 'PUT', token: admin.token, body: { integrations: { enabled: false } } });
+  assert.equal(off.status, 200, JSON.stringify(off.json));
+  assert.equal(off.json.integrations.enabled, false);
+  assert.equal(integrationsSvc.integrationsEnabled(), false);
+
+  const before = uapiHits;
+  const weather = await api('/api/integrations/weather', { token: admin.token });
+  assert.equal(weather.status, 503);
+  assert.equal(weather.json.error.code, 'integrations_disabled');
+  const hot = await api('/api/integrations/hotboard', { token: admin.token });
+  assert.equal(hot.status, 503);
+  assert.equal(hot.json.error.code, 'integrations_disabled');
+  const probe = await api('/api/admin/integrations/test', { method: 'POST', token: admin.token, body: { kind: 'weather' } });
+  assert.equal(probe.status, 503);
+  assert.equal(uapiHits, before, '关闭后不应发起任何上游请求');
+
+  const status = await api('/api/integrations/status', { token: admin.token });
+  assert.equal(status.status, 200);
+  assert.equal(status.json.enabled, false);
+
+  const on = await api('/api/admin/settings', { method: 'PUT', token: admin.token, body: { integrations: { enabled: true } } });
+  assert.equal(on.status, 200);
+  assert.equal(on.json.integrations.enabled, true);
+  // 关闭期间可能命中了测试早些时候写入的 10 分钟缓存，这里强制刷新以验证真实上游恢复
+  const back = await api('/api/integrations/weather?refresh=1', { token: admin.token });
+  assert.equal(back.status, 200, JSON.stringify(back.json));
+  assert.ok(uapiHits > before);
+});
