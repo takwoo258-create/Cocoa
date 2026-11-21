@@ -770,3 +770,85 @@ test('app.js 已挂载 /api/integrations 与 config-test 路由', () => {
   assert.match(appSource, /app\.use\('\/api\/integrations'/, 'app.js 应挂载 /api/integrations');
   assert.match(appSource, /app\.use\('\/api\/config', configTestRouter\(\)\)/, 'app.js 应在 configRouter 之前挂载 configTestRouter');
 });
+
+// ══════════════════════ 7. UAPI 密钥与邮件模板（v1.5.3） ══════════════════════
+test('UAPI：管理端密钥优先于环境变量，可测试连通与自定义地址', async () => {
+  const put = await api('/api/admin/settings', {
+    method: 'PUT',
+    token: admin.token,
+    body: { integrations: { uapiKey: 'uapi_admin_key', baseUrl: MOCK_BASE } },
+  });
+  assert.equal(put.status, 200, JSON.stringify(put.json));
+  assert.equal(put.json.integrations.uapiKeyMasked.includes('****'), true);
+  assert.equal(put.json.integrations.uapiKeySource, 'admin');
+  assert.equal(put.json.integrations.base, MOCK_BASE);
+
+  const got = await api('/api/admin/settings', { token: admin.token });
+  assert.equal(got.json.integrations.uapiKeySet, true);
+  assert.equal(got.json.integrations.uapiKeySource, 'admin');
+
+  assert.equal(integrationsSvc.uapiKey(), 'uapi_admin_key');
+  const before = uapiHits;
+  const probe = await api('/api/admin/integrations/test', { method: 'POST', token: admin.token, body: { kind: 'weather' } });
+  assert.equal(probe.status, 200, JSON.stringify(probe.json));
+  assert.equal(probe.json.ok, true);
+  assert.equal(probe.json.keySource, 'admin');
+  assert.ok(uapiHits > before, '测试应真实请求一次上游');
+
+  const hot = await api('/api/admin/integrations/test', { method: 'POST', token: admin.token, body: { kind: 'hotboard' } });
+  assert.equal(hot.status, 200);
+  assert.equal(hot.json.ok, true);
+  assert.ok(hot.json.sample.length >= 1);
+
+  const bad = await api('/api/admin/settings', { method: 'PUT', token: admin.token, body: { integrations: { baseUrl: 'not-a-url' } } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.error.code, 'uapi_base_invalid');
+
+  // 清空后回退（测试环境未设置 UAPI_KEY）
+  const clear = await api('/api/admin/settings', { method: 'PUT', token: admin.token, body: { integrations: { uapiKey: '' } } });
+  assert.equal(clear.status, 200);
+  assert.equal(integrationsSvc.uapiKey(), '');
+  assert.equal(integrationsSvc.uapiKeySource(), 'none');
+});
+
+test('邮件模板：分类默认值、覆盖、预览与测试发送结果', async () => {
+  const meta = await api('/api/admin/mail-templates', { token: admin.token });
+  assert.equal(meta.status, 200);
+  assert.equal(meta.json.items.length, 5);
+  const code = meta.json.items.find((i) => i.kind === 'code');
+  assert.ok(code.variables.includes('code'));
+  assert.ok(code.defaultSubject.length > 0);
+
+  const preview = await api('/api/admin/mail-templates/preview', {
+    method: 'POST',
+    token: admin.token,
+    body: { kind: 'code', vars: { code: '654321', purpose: 'login' } },
+  });
+  assert.equal(preview.status, 200, JSON.stringify(preview.json));
+  assert.match(preview.json.html, /654321/);
+  assert.match(preview.json.subject, /Cocoa/);
+
+  const put = await api('/api/admin/settings', {
+    method: 'PUT',
+    token: admin.token,
+    body: { mailTemplates: { quota: { subject: '额度提醒 {{name}}', body: '你好{{name}}：已用 {{usedTokens}} tokens' } } },
+  });
+  assert.equal(put.status, 200, JSON.stringify(put.json));
+  const custom = await api('/api/admin/mail-templates/preview', {
+    method: 'POST',
+    token: admin.token,
+    body: { kind: 'quota', vars: { name: '小明', usedTokens: 1234 } },
+  });
+  assert.equal(custom.status, 200);
+  assert.match(custom.json.subject, /小明/);
+  assert.equal(custom.json.overridden, true);
+  assert.match(custom.json.html, /1234/);
+
+  const invalid = await api('/api/admin/mail-templates/preview', { method: 'POST', token: admin.token, body: { kind: 'nope' } });
+  assert.equal(invalid.status, 400);
+
+  const sendTest = await api('/api/admin/mail-templates/test', { method: 'POST', token: admin.token, body: { kind: 'code' } });
+  assert.equal(sendTest.status, 200);
+  assert.equal(sendTest.json.ok, false);
+  assert.equal(sendTest.json.reason, 'smtp_not_configured');
+});

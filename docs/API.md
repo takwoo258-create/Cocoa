@@ -524,3 +524,23 @@ WS 事件：`plaza_used`、`plaza_quota`、`plaza_expiring`、`plaza_expired`、
 - `POST /api/config/test-image`（登录）：`{ profileId?, prompt?, size?, baseUrl?, apiKey?, model? }` → `{ ok, elapsedMs, prompt, model, id, url, mime, size }`；未配置生图模型返回 400 `api_not_configured`。
 - `POST /api/config/test-stt`（multipart，字段 `file`）：音频 MIME 缺失时按文件扩展名识别；失败返回 400 `audio_mime_invalid` 或 502 上游错误详情。
 - 需要更新时，`/api/version/updates` 的 `requiredVersion` 与更高版本会同时返回，客户端可在满足最低版本的前提下选择更高版本。
+
+### 16.10 UAPI 与邮件模板配置（后端）
+
+**UAPI 密钥与地址**（管理员）：
+
+- `PUT /api/admin/settings`：`{ integrations: { uapiKey, baseUrl } }`
+  - `uapiKey` 传 `****` 保持原值，传空字符串清空；密钥加密存放在 `admin_settings.integrations`，任何响应只返回掩码。
+  - `baseUrl` 可填自建网关或代理地址，必须是 http(s) URL；留空回退部署环境。
+  - 优先级：管理端配置 → 环境变量 `UAPI_KEY`/`COCOA_UAPI_KEY` → `COCOA_UAPI_ENV` 指向的文件。
+- `GET /api/admin/settings` 的 `integrations` 返回 `uapiKeySet`、`uapiKeyMasked`、`uapiKeySource`（`admin|env|file|none`）、`base`、`defaultCity`、`hotboardTypes`。
+- `POST /api/admin/integrations/test`：`{ kind: "weather" | "hotboard" }` → 真实请求一次上游，返回 `{ ok, kind, elapsedMs, base, keySource, sample }`，绕过缓存。
+
+**邮件模板**（管理员，按场景分别配置）：
+
+- 支持场景：`code`（验证码）、`share`（分享通知）、`expiry`（到期）、`quota`（额度）、`ban`（封禁）。
+- `GET /api/admin/mail-templates` → `{ kinds, items:[{ kind, variables, defaultSubject, defaultBody, subject, body, overridden }] }`。
+- `PUT /api/admin/settings`：`{ mailTemplates: { [kind]: { subject, body } } }`；`subject` ≤200 字、`body` ≤4000 字；传 `null` 恢复默认；正文按行拆成段落渲染进品牌化 HTML，同时生成纯文本版本。
+- 占位变量：`{{name}} {{shareId}} {{code}} {{minutes}} {{purposeLabel}} {{email}} {{servicesText}} {{resourceTitle}} {{usedTokens}} {{tokenSoft}} {{tokenHard}} {{expiresAt}} {{until}} {{scopeText}} {{reason}} {{time}}`。
+- `POST /api/admin/mail-templates/preview`：`{ kind, vars? }` → `{ subject, html, text, overridden, effective }`，不发送。
+- `POST /api/admin/mail-templates/test`：`{ kind, to? }` → 使用当前 SMTP 给管理员或指定邮箱发一封测试邮件，返回 `{ ok, reason, to, kind, subject }`；未配置 SMTP 时 `ok:false, reason:"smtp_not_configured"`。

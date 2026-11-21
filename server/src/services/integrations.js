@@ -1,5 +1,5 @@
 // 集成 API：UAPI 天气 / 热榜（内存缓存 + 可注入 fetch，测试不联网）
-// key 来源：env UAPI_KEY → admin_settings integrations.uapiKey → COCOA_UAPI_ENV 指向的 env 文件（仅本地调试）
+// key 来源：admin_settings integrations.uapiKey → env UAPI_KEY/COCOA_UAPI_KEY → COCOA_UAPI_ENV 指向的 env 文件（仅本地调试）
 // 约定：上游失败一律抛 502 且**不清空**已有缓存；cached 数据在 TTL 内直接命中
 import fs from 'node:fs';
 import { AppError, badRequest } from '../core/errors.js';
@@ -8,6 +8,7 @@ import logger from '../core/logger.js';
 import { getAdminSetting } from './settings.js';
 
 const DEFAULT_BASE = process.env.COCOA_UAPI_BASE || 'https://uapis.cn';
+const FALLBACK_BASE = 'https://uapis.cn';
 const WEATHER_TTL_MS = 10 * 60_000;
 const HOTBOARD_TTL_MS = 5 * 60_000;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -51,23 +52,72 @@ function readKeyFromEnvFile(file) {
   return value;
 }
 
-/** UAPI key（只用于请求头，不写日志、不回显） */
+/** 管理端配置的 UAPI 基础地址（可自定义网关/代理），非法值回退默认 */
+export function uapiBase() {
+  let cfg = {};
+  try {
+    cfg = getAdminSetting('integrations', {}) || {};
+  } catch {
+    cfg = {};
+  }
+  const raw = String(cfg.baseUrl || process.env.COCOA_UAPI_BASE || DEFAULT_BASE || FALLBACK_BASE).trim();
+  if (!/^https?:\/\/[^\s]+$/i.test(raw)) return FALLBACK_BASE;
+  return raw.replace(/\/+$/, '');
+}
+
+/** UAPI key（只用于请求头，不写日志、不回显）；管理端配置优先于部署环境 */
 export function uapiKey() {
+  let cfg = {};
+  try {
+    cfg = getAdminSetting('integrations', {}) || {};
+  } catch {
+    cfg = {};
+  }
+  if (cfg.uapiKey) return String(cfg.uapiKey).trim();
   const fromEnv = String(process.env.UAPI_KEY || process.env.COCOA_UAPI_KEY || '').trim();
   if (fromEnv) return fromEnv;
-  const cfg = getAdminSetting('integrations', {}) || {};
-  if (cfg.uapiKey) return String(cfg.uapiKey).trim();
   const file = process.env.COCOA_UAPI_ENV;
   if (file) return readKeyFromEnvFile(file);
   return '';
 }
 
+/** 当前 key 来自哪里：admin | env | file | none */
+export function uapiKeySource() {
+  let cfg = {};
+  try {
+    cfg = getAdminSetting('integrations', {}) || {};
+  } catch {
+    cfg = {};
+  }
+  if (cfg.uapiKey) return 'admin';
+  if (String(process.env.UAPI_KEY || process.env.COCOA_UAPI_KEY || '').trim()) return 'env';
+  if (process.env.COCOA_UAPI_ENV && readKeyFromEnvFile(process.env.COCOA_UAPI_ENV)) return 'file';
+  return 'none';
+}
+
 export function integrationStatus() {
-  return { uapiKeySet: Boolean(uapiKey()), base: DEFAULT_BASE, defaultCity: DEFAULT_CITY, hotboardTypes: [...HOTBOARD_TYPES] };
+  return {
+    uapiKeySet: Boolean(uapiKey()),
+    uapiKeySource: uapiKeySource(),
+    base: uapiBase(),
+    defaultCity: DEFAULT_CITY,
+    hotboardTypes: [...HOTBOARD_TYPES],
+  };
+}
+
+/** 连通性测试：真实请求一次天气/热榜（绕过缓存） */
+export async function testIntegration(kind = 'weather') {
+  const started = Date.now();
+  if (kind === 'hotboard') {
+    const data = await getHotboard('weibo', { force: true });
+    return { ok: true, kind, elapsedMs: Date.now() - started, base: uapiBase(), keySource: uapiKeySource(), sample: (data.items || []).slice(0, 3).map((i) => i.title || i.name || '') };
+  }
+  const data = await getWeather(DEFAULT_CITY, { force: true });
+  return { ok: true, kind: 'weather', elapsedMs: Date.now() - started, base: uapiBase(), keySource: uapiKeySource(), sample: `${data.city || DEFAULT_CITY} ${data.weather || ''} ${data.temperature ?? ''}°C`.trim() };
 }
 
 function buildUrl(pathname, params) {
-  const base = String(DEFAULT_BASE).replace(/\/+$/, '');
+  const base = String(uapiBase()).replace(/\/+$/, '');
   const url = new URL(base + pathname);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
@@ -234,4 +284,4 @@ export async function hotboardPrompt(type = 'weibo', limit = 5) {
   return hot.items.slice(0, Math.max(1, Math.min(20, limit))).map((i) => `${i.rank}. ${i.title}`).join('\n');
 }
 
-export default { getWeather, getHotboard, getWeatherSafe, getHotboardSafe, weatherPrompt, hotboardPrompt };
+export default { getWeather, getHotboard, getWeatherSafe, getHotboardSafe, weatherPrompt, hotboardPrompt, uapiKey, uapiKeySource, uapiBase, integrationStatus, testIntegration };

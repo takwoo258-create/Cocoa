@@ -13,7 +13,8 @@ import {
   getAdminSetting, setAdminSetting, getSmtpConfig, getOnebotConfig, mergeDeep,
   getSystemModelsConfig, getSystemModelsPublic, normalizeProvider,
 } from '../services/settings.js';
-import { sendMail, MAIL_TEMPLATE_KINDS } from '../mail/sender.js';
+import { sendMail, MAIL_TEMPLATE_KINDS, mailTemplateMeta, previewMail } from '../mail/sender.js';
+import { testIntegration, integrationStatus } from '../services/integrations.js';
 import { listBans, createBan, deleteBan } from '../services/plaza.js';
 import { connectionCount } from '../realtime/hub.js';
 import { usageFor } from './stats.js';
@@ -492,12 +493,17 @@ export default function register() {
       integrations: {
         uapiKeySet: Boolean(integrations.uapiKey),
         uapiKeyMasked: maskSecret(integrations.uapiKey),
+        uapiKeySource: integrationStatus().uapiKeySource,
+        base: integrationStatus().base,
+        defaultCity: integrationStatus().defaultCity,
+        hotboardTypes: integrationStatus().hotboardTypes,
       },
       systemModels: {
         ...getSystemModelsPublic(),
         keyCount: getSystemModelsConfig().providers.filter((p) => p.apiKey).length,
       },
       mailTemplates: getAdminSetting('mailTemplates', {}) || {},
+      mailTemplateMeta: mailTemplateMeta(),
       switches: {
         updateForce: Boolean(update.force),
         autoUpgrade: Boolean(update.autoUpgrade),
@@ -547,6 +553,13 @@ export default function register() {
         if (!KEEP.has(body.integrations.uapiKey)) {
           patch.uapiKey = body.integrations.uapiKey.trim().slice(0, 200);
         }
+      }
+      if (typeof body.integrations.baseUrl === 'string') {
+        const baseUrl = body.integrations.baseUrl.trim();
+        if (baseUrl && !/^https?:\/\/[^\s]+$/i.test(baseUrl)) {
+          throw badRequest('UAPI 地址需为 http(s) URL', 'uapi_base_invalid');
+        }
+        patch.baseUrl = baseUrl.slice(0, 300);
       }
       if (Object.keys(patch).length) {
         setAdminSetting('integrations', mergeDeep(getAdminSetting('integrations', {}) || {}, patch));
@@ -625,7 +638,7 @@ export default function register() {
       })(),
       integrations: (() => {
         const i = getAdminSetting('integrations', {}) || {};
-        return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey) };
+        return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey), uapiKeySource: integrationStatus().uapiKeySource, base: integrationStatus().base };
       })(),
       systemModels: getSystemModelsPublic(),
       mailTemplates: getAdminSetting('mailTemplates', {}) || {},
@@ -644,7 +657,7 @@ export default function register() {
         })(),
         integrations: (() => {
           const i = getAdminSetting('integrations', {}) || {};
-          return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey) };
+          return { uapiKeySet: Boolean(i.uapiKey), uapiKeyMasked: maskSecret(i.uapiKey), uapiKeySource: integrationStatus().uapiKeySource, base: integrationStatus().base };
         })(),
         mailTemplates: getAdminSetting('mailTemplates', {}) || {},
         systemModels: getSystemModelsPublic(),
@@ -755,6 +768,45 @@ export default function register() {
   r.get('/upgrade/status', (_req, res) => {
     res.json(upgradeStatus());
   });
+
+
+  // ---------- UAPI 集成（密钥/地址可自由配置） ----------
+  r.post(
+    '/integrations/test',
+    asyncHandler(async (req, res) => {
+      const kind = String(req.body?.kind || 'weather').toLowerCase() === 'hotboard' ? 'hotboard' : 'weather';
+      const result = await testIntegration(kind);
+      res.json(result);
+    }),
+  );
+
+  // ---------- 邮件模板（分类覆盖与预览/测试） ----------
+  r.get('/mail-templates', (_req, res) => {
+    res.json({ ok: true, ...mailTemplateMeta() });
+  });
+
+  r.post(
+    '/mail-templates/preview',
+    asyncHandler(async (req, res) => {
+      const kind = String(req.body?.kind || 'code');
+      const result = previewMail(kind, req.body?.vars || {});
+      res.json({ ok: true, ...result });
+    }),
+  );
+
+  r.post(
+    '/mail-templates/test',
+    asyncHandler(async (req, res) => {
+      const kind = String(req.body?.kind || 'code');
+      const admin = get('SELECT email FROM users WHERE id = ?', req.userId);
+      const to = String(req.body?.to || admin?.email || '').trim();
+      if (!EMAIL_RE.test(to)) throw badRequest('收件邮箱格式不正确', 'email_invalid');
+      const preview = previewMail(kind, req.body?.vars || {});
+      const sent = await sendMail({ to, subject: preview.subject, text: preview.text, html: preview.html });
+      audit(req.userId, 'admin.mail_template.test', kind, { to, ok: sent.ok }, req.ip);
+      res.json({ ok: Boolean(sent.ok), reason: sent.reason || null, to, kind, subject: preview.subject, overridden: preview.overridden });
+    }),
+  );
 
   // ---------- OneBot 状态 ----------
   r.get('/onebot/status', (_req, res) => {

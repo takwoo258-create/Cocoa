@@ -5,6 +5,7 @@ import nodemailer from 'nodemailer';
 import { getSmtpConfig, getAdminSetting } from '../services/settings.js';
 import env from '../env.js';
 import logger from '../core/logger.js';
+import { badRequest } from '../core/errors.js';
 
 const BRAND = {
   cocoa: '#6b4a35',
@@ -59,6 +60,113 @@ function formatTime(value) {
 
 // v1.5.0：管理端可在 admin_settings.mailTemplates 覆盖标题/正文（占位变量 {{name}} {{shareId}} {{expiresAt}} {{time}} {{reason}}）
 export const MAIL_TEMPLATE_KINDS = ['code', 'share', 'expiry', 'quota', 'ban'];
+
+/** 各类邮件可用的占位变量（管理端展示） */
+export const MAIL_TEMPLATE_VARIABLES = {
+  code: ['name', 'code', 'minutes', 'purposeLabel', 'email', 'time'],
+  share: ['name', 'shareId', 'servicesText', 'expiresAt', 'time', 'reason'],
+  expiry: ['name', 'shareId', 'servicesText', 'expiresAt', 'time', 'reason'],
+  quota: ['name', 'shareId', 'resourceTitle', 'usedTokens', 'tokenSoft', 'tokenHard', 'expiresAt', 'time', 'reason'],
+  ban: ['name', 'shareId', 'reason', 'until', 'time', 'scopeText'],
+};
+
+/** 各类邮件的默认标题与正文（纯文本，管理端可覆盖） */
+export const MAIL_TEMPLATE_DEFAULTS = {
+  code: {
+    subject: '【Cocoa】{{purposeLabel}}',
+    body: '你好{{name}}：\n你正在{{purposeLabel}}，验证码是 {{code}}，{{minutes}} 分钟内有效。\n若非本人操作，请忽略本邮件。',
+  },
+  share: {
+    subject: '【Cocoa】{{name}} 的模型分享',
+    body: '你好：\n{{name}}（{{shareId}}）向你分享了 {{servicesText}}，{{expiresAt}}。\n{{reason}}\n可前往共享广场查看详情。',
+  },
+  expiry: {
+    subject: '【Cocoa】模型授权到期提醒',
+    body: '你好{{name}}：\n{{servicesText}} 的授权 {{expiresAt}}。\n到期后会自动回退到你自己的配置。',
+  },
+  quota: {
+    subject: '【Cocoa】模型使用额度提醒',
+    body: '你好{{name}}：\n你在「{{resourceTitle}}」的模型授权已用 {{usedTokens}} tokens（软限额 {{tokenSoft}}，硬限额 {{tokenHard}}）。\n{{reason}}',
+  },
+  ban: {
+    subject: '【Cocoa】分享权限已被禁用',
+    body: '你好{{name}}：\n管理员已禁用你的{{scopeText}}。\n原因：{{reason}}\n解除时间：{{until}}',
+  },
+};
+
+/** 管理端邮件模板元信息：默认值、当前生效覆盖与变量 */
+export function mailTemplateMeta() {
+  const overrides = (() => {
+    try {
+      return getAdminSetting('mailTemplates', {}) || {};
+    } catch {
+      return {};
+    }
+  })();
+  const items = MAIL_TEMPLATE_KINDS.map((kind) => {
+    const def = MAIL_TEMPLATE_DEFAULTS[kind];
+    const ov = overrides[kind] && typeof overrides[kind] === 'object' ? overrides[kind] : null;
+    return {
+      kind,
+      variables: MAIL_TEMPLATE_VARIABLES[kind] || [],
+      defaultSubject: def.subject,
+      defaultBody: def.body,
+      subject: ov?.subject || def.subject,
+      body: ov?.body || def.body,
+      overridden: Boolean(ov && (ov.subject || ov.body)),
+    };
+  });
+  return { kinds: [...MAIL_TEMPLATE_KINDS], items };
+}
+
+const SAMPLE_MAIL_PAYLOAD = {
+  code: { code: '123456', purpose: 'register', email: 'user@example.com', minutes: 10 },
+  share: {
+    direction: 'share',
+    ownerName: '阿困',
+    targetName: 'AbCd1234',
+    services: ['chat', 'tts'],
+    permanent: false,
+    expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(),
+    note: '示例附言',
+  },
+  expiry: {
+    ownerName: '阿困',
+    targetName: 'AbCd1234',
+    services: ['chat'],
+    expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+    upcoming: false,
+    name: '阿困',
+    shareId: 'AbCd1234',
+    resourceTitle: '模型授权',
+  },
+  quota: {
+    name: '阿困',
+    shareId: 'AbCd1234',
+    level: 'soft',
+    resourceTitle: '共享模型',
+    usedTokens: 12000,
+    tokenSoft: 10000,
+    tokenHard: 20000,
+    expiresAt: new Date(Date.now() + 3 * 86400_000).toISOString(),
+  },
+  ban: { name: '阿困', shareId: 'AbCd1234', scope: 'all', reason: '示例原因', until: null },
+};
+
+/** 预览某类邮件（应用管理端覆盖模板，不发送） */
+export function previewMail(kind, vars = {}) {
+  const k = String(kind || 'code');
+  if (!MAIL_TEMPLATE_KINDS.includes(k)) throw badRequest('邮件模板类型不支持', 'mail_template_kind_invalid');
+  const payload = { ...(SAMPLE_MAIL_PAYLOAD[k] || {}), ...(vars && typeof vars === 'object' ? vars : {}) };
+  let tpl;
+  if (k === 'code') tpl = codeEmailTemplate(payload);
+  else if (k === 'share') tpl = shareNoticeTemplate(payload);
+  else if (k === 'expiry') tpl = expiryNoticeTemplate(payload);
+  else if (k === 'quota') tpl = quotaNoticeTemplate(payload);
+  else tpl = banNoticeTemplate(payload);
+  const meta = mailTemplateMeta().items.find((i) => i.kind === k);
+  return { kind: k, subject: tpl.subject, html: tpl.html, text: tpl.text, overridden: Boolean(tpl.overridden), effective: meta };
+}
 
 export function fillPlaceholders(text, vars = {}) {
   return String(text ?? '').replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (_m, key) =>
@@ -261,6 +369,9 @@ export function codeEmailTemplate({ code = '', purpose = 'register', email = '',
   return applyMailOverride('code', base, {
     name: email || '',
     code,
+    minutes,
+    purposeLabel: label,
+    email,
     shareId: '',
     expiresAt: `${minutes} 分钟`,
     time: nowUtc8(),
@@ -339,6 +450,7 @@ export function shareNoticeTemplate(payload = {}) {
   return applyMailOverride('share', base, {
     name: direction === 'request' ? targetName || ownerName : ownerName || targetName,
     shareId: targetName || ownerName || '',
+    servicesText: serviceText,
     expiresAt: validity,
     time: nowUtc8(),
     reason: note || '',
@@ -388,6 +500,8 @@ export function expiryNoticeTemplate(payload = {}) {
   return applyMailOverride('expiry', base, {
     name: name || ownerName || targetName || '',
     shareId: shareId || targetName || ownerName || '',
+    servicesText: serviceText,
+    resourceTitle: resourceTitle || '',
     expiresAt: endedAt,
     time: nowUtc8(),
     reason: upcoming ? '即将到期' : '已到期',
@@ -440,6 +554,10 @@ export function quotaNoticeTemplate(payload = {}) {
   return applyMailOverride('quota', base, {
     name,
     shareId,
+    resourceTitle,
+    usedTokens,
+    tokenSoft,
+    tokenHard,
     expiresAt: formatTime(expiresAt),
     time: nowUtc8(),
     reason: hard ? '已达硬限额' : '已达软限额',
@@ -473,6 +591,8 @@ export function banNoticeTemplate(payload = {}) {
   return applyMailOverride('ban', base, {
     name,
     shareId,
+    scopeText,
+    until: until ? formatTime(until) : '永久',
     expiresAt: until ? formatTime(until) : '永久',
     time: nowUtc8(),
     reason: reason || '未填写',
