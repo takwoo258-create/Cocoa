@@ -23,7 +23,7 @@ import { getPrefs, getUserApi } from '../services/settings.js';
 import { enqueue, cancelJobs, nextJob, jobPayload } from '../services/jobs.js';
 import { recordUsage } from './usage.js';
 import { parseReply, clampSendSec, typingSecondsFor } from './reply.js';
-import { checkSentenceComplete, needsSentenceCheck, sentenceWaitDueMs } from './sentence.js';
+import { checkSentenceComplete, needsSentenceCheck, sentenceWaitDueMs, sentenceTiming } from './sentence.js';
 import {
   ensureMainConversation,
   getConversation,
@@ -1553,16 +1553,17 @@ export async function submitUserMessage({
   if (source !== 'onebot' && needsSentenceCheck({ kind: mediaKind, text, hasTranscript: media.hasTranscript })) {
     const pendingSentence = nextJob(characterId, 'sentence_wait');
     const pendingPayload = pendingSentence ? jobPayload(pendingSentence) : null;
-    // 同一段连续输入从第一条 incomplete 起算，总等待不超过 60s
+    // 同一段连续输入从第一条 incomplete 起算，总等待不超过配置上限（默认 60s）
     const firstAt = Number(pendingPayload?.firstAt) > 0 ? Number(pendingPayload.firstAt) : Date.now();
     cancelJobs(characterId, 'sentence_wait');
     broadcastTyping(userId, characterId, true, 'checking');
     sentence = await checkSentenceComplete(userId, text, { provider: prov });
     if (!sentence.complete) {
       const now = Date.now();
-      const due = sentenceWaitDueMs({ now, firstAt });
+      const timing = sentenceTiming(character?.settings);
+      const due = sentenceWaitDueMs({ now, firstAt, waitMs: timing.waitMs, maxWaitMs: timing.maxWaitMs });
       if (due <= now + 25) {
-        // 已达到 60s 总等待上限：不再排队，直接生成
+        // 已达到总等待上限：不再排队，直接生成
         sentenceCapped = true;
         logger.debug('句子等待达到总上限，直接生成', { characterId, firstAt, now });
       } else {

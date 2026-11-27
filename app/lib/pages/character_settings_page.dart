@@ -90,6 +90,7 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
               ? '宣城'
               : _weatherCity.text.trim(),
           'qqEnabled': _settings.qqEnabled,
+          'dialogue': _settings.dialogue.toJson(),
           if (confirmReplace) 'confirmReplace': true,
         },
       );
@@ -537,6 +538,113 @@ class _CharacterSettingsPageState extends State<CharacterSettingsPage> {
                 const Text(
                   '开启后角色可把创作/阅读感想以动态形式发到绑定的 QQ 空间（需管理员配置 NapCat）。',
                   style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                ),
+              ],
+            ),
+          ),
+          SectionCard(
+            title: '对话等待',
+            child: Column(
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    const Expanded(
+                      child: Text('碎片消息等待', style: TextStyle(fontSize: 12.5)),
+                    ),
+                    DropdownButton<int>(
+                      value: const <int>[3, 5, 10, 15, 30, 60, 120]
+                              .contains(_settings.dialogue.sentenceWaitSec)
+                          ? _settings.dialogue.sentenceWaitSec
+                          : 30,
+                      items: const <int>[3, 5, 10, 15, 30, 60, 120]
+                          .map(
+                            (int v) => DropdownMenuItem<int>(
+                              value: v,
+                              child: Text('$v 秒',
+                                  style: const TextStyle(fontSize: 12.5)),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (int? v) {
+                        if (v == null) return;
+                        setState(() {
+                          _settings = _settings.copyWith(
+                            dialogue: _settings.dialogue.copyWith(
+                              sentenceWaitSec: v,
+                              sentenceMaxWaitSec: v * 2,
+                            ),
+                          );
+                        });
+                        _save(quiet: true);
+                      },
+                    ),
+                  ],
+                ),
+                const Text(
+                  '消息被判断为没说完时，等待后续输入的秒数；连续碎片总上限为该值的两倍。默认 30 秒。',
+                  style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                ),
+                const Divider(height: 14),
+                Row(
+                  children: <Widget>[
+                    const Expanded(
+                      child: Text('主动等待区间', style: TextStyle(fontSize: 12.5)),
+                    ),
+                    DropdownButton<String>(
+                      value: () {
+                        const List<String> presets = <String>[
+                          '30-60', '60-80', '90-120', '120-180', '300-600',
+                        ];
+                        final String cur =
+                            '${_settings.dialogue.activeWaitMinSec}-${_settings.dialogue.activeWaitMaxSec}';
+                        return presets.contains(cur) ? cur : '60-80';
+                      }(),
+                      items: const <String>[
+                        '30-60', '60-80', '90-120', '120-180', '300-600',
+                      ]
+                          .map(
+                            (String v) => DropdownMenuItem<String>(
+                              value: v,
+                              child: Text(
+                                v == '60-80' ? '60–80 秒（默认）' : '$v 秒',
+                                style: const TextStyle(fontSize: 12.5),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (String? v) {
+                        if (v == null) return;
+                        final List<String> parts = v.split('-');
+                        setState(() {
+                          _settings = _settings.copyWith(
+                            dialogue: _settings.dialogue.copyWith(
+                              activeWaitMinSec: int.parse(parts[0]),
+                              activeWaitMaxSec: int.parse(parts[1]),
+                            ),
+                          );
+                        });
+                        _save(quiet: true);
+                      },
+                    ),
+                  ],
+                ),
+                const Text(
+                  '角色回复后，超过该区间仍无回应时会主动追问或发来消息。默认 60–80 秒。',
+                  style: TextStyle(fontSize: 10.5, color: AppColors.inkSoft),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _settings = _settings.copyWith(
+                          dialogue: DialogueSettings.defaults,
+                        );
+                      });
+                      _save(quiet: true);
+                    },
+                    child: const Text('恢复默认', style: TextStyle(fontSize: 12)),
+                  ),
                 ),
               ],
             ),

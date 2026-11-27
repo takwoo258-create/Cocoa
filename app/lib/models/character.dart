@@ -34,7 +34,7 @@ class CharacterState {
     switch (sleepState) {
       case 'sleep':
       case 'sleeping':
-        return '睡眠中';
+        return '睡梦中…';
       case 'nap':
       case 'napping':
         return '休息中';
@@ -127,6 +127,50 @@ class SleepSchedule {
       );
 }
 
+/// v2.0.0：对话等待参数（默认按需求书：碎片 30s、主动等待 60–80s）。
+class DialogueSettings {
+  const DialogueSettings({
+    this.sentenceWaitSec = 30,
+    this.sentenceMaxWaitSec = 60,
+    this.activeWaitMinSec = 60,
+    this.activeWaitMaxSec = 80,
+  });
+
+  final int sentenceWaitSec;
+  final int sentenceMaxWaitSec;
+  final int activeWaitMinSec;
+  final int activeWaitMaxSec;
+
+  static const DialogueSettings defaults = DialogueSettings();
+
+  factory DialogueSettings.fromJson(Map<String, dynamic> j) => DialogueSettings(
+        sentenceWaitSec: asInt(j['sentenceWaitSec'], 30),
+        sentenceMaxWaitSec: asInt(j['sentenceMaxWaitSec'], 60),
+        activeWaitMinSec: asInt(j['activeWaitMinSec'], 60),
+        activeWaitMaxSec: asInt(j['activeWaitMaxSec'], 80),
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'sentenceWaitSec': sentenceWaitSec,
+        'sentenceMaxWaitSec': sentenceMaxWaitSec,
+        'activeWaitMinSec': activeWaitMinSec,
+        'activeWaitMaxSec': activeWaitMaxSec,
+      };
+
+  DialogueSettings copyWith({
+    int? sentenceWaitSec,
+    int? sentenceMaxWaitSec,
+    int? activeWaitMinSec,
+    int? activeWaitMaxSec,
+  }) =>
+      DialogueSettings(
+        sentenceWaitSec: sentenceWaitSec ?? this.sentenceWaitSec,
+        sentenceMaxWaitSec: sentenceMaxWaitSec ?? this.sentenceMaxWaitSec,
+        activeWaitMinSec: activeWaitMinSec ?? this.activeWaitMinSec,
+        activeWaitMaxSec: activeWaitMaxSec ?? this.activeWaitMaxSec,
+      );
+}
+
 class CharacterSettings {
   const CharacterSettings({
     this.rss = const <RssFeed>[],
@@ -144,6 +188,7 @@ class CharacterSettings {
     this.qqEnabled = false,
     this.enabled = true,
     this.weatherCity = '宣城',
+    this.dialogue = const DialogueSettings(),
   });
 
   final List<RssFeed> rss;
@@ -172,6 +217,9 @@ class CharacterSettings {
   /// v1.5.0：角色所在世界的天气城市。
   final String weatherCity;
 
+  /// v2.0.0：对话等待参数（碎片等待 / 主动等待区间）。
+  final DialogueSettings dialogue;
+
   static const CharacterSettings defaults = CharacterSettings();
 
   factory CharacterSettings.fromJson(Map<String, dynamic> j) =>
@@ -191,6 +239,7 @@ class CharacterSettings {
         qqEnabled: asBool(j['qqEnabled']),
         enabled: asBool(j['enabled'], true),
         weatherCity: asString(j['weatherCity'], '宣城'),
+        dialogue: DialogueSettings.fromJson(asMap(j['dialogue'])),
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -209,6 +258,7 @@ class CharacterSettings {
         'qqEnabled': qqEnabled,
         'enabled': enabled,
         'weatherCity': weatherCity,
+        'dialogue': dialogue.toJson(),
       };
 
   CharacterSettings copyWith({
@@ -227,6 +277,7 @@ class CharacterSettings {
     bool? qqEnabled,
     bool? enabled,
     String? weatherCity,
+    DialogueSettings? dialogue,
   }) =>
       CharacterSettings(
         rss: rss ?? this.rss,
@@ -244,6 +295,7 @@ class CharacterSettings {
         qqEnabled: qqEnabled ?? this.qqEnabled,
         enabled: enabled ?? this.enabled,
         weatherCity: weatherCity ?? this.weatherCity,
+        dialogue: dialogue ?? this.dialogue,
       );
 }
 

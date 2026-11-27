@@ -29,7 +29,25 @@ export const DEFAULT_CHARACTER_SETTINGS = {
   modelRouting: {},
   searchProvider: 'deepseek',
   diaryHintEnabled: true,
+  // v2.0.0：对话等待参数（需求书默认值；可在角色设置中调整）
+  dialogue: { sentenceWaitSec: 30, sentenceMaxWaitSec: 60, activeWaitMinSec: 60, activeWaitMaxSec: 80 },
 };
+
+/** dialogue 配置归一化：钳制范围并保证 max≥wait、min≤max */
+export function normalizeDialogue(raw = {}, base = DEFAULT_CHARACTER_SETTINGS.dialogue) {
+  const merged = { ...base, ...(raw || {}) };
+  const clamp = (v, min, max, fallback) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.min(max, Math.max(min, Math.round(n)));
+  };
+  const sentenceWaitSec = clamp(merged.sentenceWaitSec, 3, 120, 30);
+  const sentenceMaxWaitSec = Math.max(sentenceWaitSec, clamp(merged.sentenceMaxWaitSec, 3, 240, 60));
+  let activeWaitMinSec = clamp(merged.activeWaitMinSec, 30, 600, 60);
+  let activeWaitMaxSec = clamp(merged.activeWaitMaxSec, 30, 600, 80);
+  if (activeWaitMinSec > activeWaitMaxSec) [activeWaitMinSec, activeWaitMaxSec] = [activeWaitMaxSec, activeWaitMinSec];
+  return { sentenceWaitSec, sentenceMaxWaitSec, activeWaitMinSec, activeWaitMaxSec };
+}
 
 export function decryptRow(row) {
   if (!row) return null;
@@ -69,12 +87,22 @@ export function ensureState(characterId, userId) {
 export function getSettings(characterId, userId) {
   const row = get('SELECT payload FROM character_settings WHERE character_id = ?', characterId);
   const saved = row ? decryptJson(userId, row.payload, {}) : {};
-  return { ...DEFAULT_CHARACTER_SETTINGS, ...saved, sleep: { ...DEFAULT_CHARACTER_SETTINGS.sleep, ...(saved.sleep || {}) } };
+  return {
+    ...DEFAULT_CHARACTER_SETTINGS,
+    ...saved,
+    sleep: { ...DEFAULT_CHARACTER_SETTINGS.sleep, ...(saved.sleep || {}) },
+    dialogue: normalizeDialogue(saved.dialogue || {}),
+  };
 }
 
 export function saveSettings(characterId, userId, patch) {
   const current = getSettings(characterId, userId);
-  const next = { ...current, ...(patch || {}), sleep: { ...current.sleep, ...(patch?.sleep || {}) } };
+  const next = {
+    ...current,
+    ...(patch || {}),
+    sleep: { ...current.sleep, ...(patch?.sleep || {}) },
+    dialogue: normalizeDialogue({ ...current.dialogue, ...(patch?.dialogue || {}) }),
+  };
   run(
     'INSERT INTO character_settings(character_id, payload, updated_at) VALUES(?,?,?) ON CONFLICT(character_id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at',
     characterId,
@@ -229,6 +257,7 @@ export function deleteCharacter(userId, id) {
     run('DELETE FROM changelogs WHERE character_id = ?', id);
     run('DELETE FROM diary_locks WHERE character_id = ?', id);
     run('DELETE FROM wait_states WHERE character_id = ?', id);
+    run('DELETE FROM jobs WHERE character_id = ?', id); // v2.0.0：清理未到期任务，避免残留
     run('DELETE FROM intimacy_log WHERE character_id = ?', id);
     run('DELETE FROM character_settings WHERE character_id = ?', id);
     run('DELETE FROM character_state WHERE character_id = ?', id);

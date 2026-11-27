@@ -354,9 +354,9 @@ test('sentence: cleanVerdict 容错，no 判定为未完成，失败按 yes', as
   assert.equal(failed.complete, true);
   assert.equal(failed.failed, true);
   assert.ok(character.id);
-  // v1.5.0：从第一条未完成消息起算最多等 6s
-  assert.equal(sentence.sentenceWaitDueMs({ now: 1_000, firstAt: 1_000 }), 7_000);
-  assert.equal(sentence.sentenceWaitDueMs({ now: 50_000, firstAt: 1_000 }), 7_000); // firstAt + 6s 先到
+  // v2.0.0：默认单段 30s，从第一条未完成消息起算总上限 60s
+  assert.equal(sentence.sentenceWaitDueMs({ now: 1_000, firstAt: 1_000 }), 31_000);
+  assert.equal(sentence.sentenceWaitDueMs({ now: 50_000, firstAt: 1_000 }), 61_000); // firstAt + 60s 先到
 });
 
 test('status: 作息判定（跨零点睡眠、午睡、关闭）与固定文案', () => {
@@ -488,11 +488,11 @@ test('chat: 文本消息落库加密、生成回复、分段任务与等待期',
   assert.equal(meta1.wait, 2);
   assert.equal(pendingJobs(character.id, 'segment_send').length, 0);
 
-  // 等待期：90 秒起 + active_reply 任务
+  // 等待期：60–80 秒 + active_reply 任务
   const ws = active.getWaitState(userId, character.id);
   assert.equal(ws.mode, 'waiting');
   const delay = new Date(ws.deadline).getTime() - new Date(ws.last_agent_at).getTime();
-  assert.ok(delay >= 89_000 && delay <= 121_000, `等待期应在 90-120s，实际 ${delay}ms`);
+  assert.ok(delay >= 59_000 && delay <= 81_000, `等待期应在 60-80s，实际 ${delay}ms`);
   assert.equal(pendingJobs(character.id, 'active_reply').length, 1);
 
 });
@@ -577,13 +577,13 @@ test('chat: 句子未完整时等 30 秒（新消息可取消），到点再生�
   const jobs = pendingJobs(character.id, 'sentence_wait');
   assert.equal(jobs.length, 1);
   const delay = new Date(jobs[0].due_at).getTime() - Date.now();
-  assert.ok(delay > 4_000 && delay <= 6_500, `等待应约 6s，实际 ${delay}ms`);
+  assert.ok(delay > 29_000 && delay <= 30_500, `等待应约 30s，实际 ${delay}ms`);
 
   // 新消息取消旧计时
   fake.state.sentence = 'yes';
   const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '我今天想说的是我升职了' });
   assert.equal(second.reason, 'generating');
-  assert.equal(pendingJobs(character.id, 'sentence_wait').length, 0, '新消息应取消旧的 6s 等待');
+  assert.equal(pendingJobs(character.id, 'sentence_wait').length, 0, '新消息应取消旧的 30s 等待');
   await second.waitForReply;
 
   // 再验证到点触发
@@ -596,7 +596,7 @@ test('chat: 句子未完整时等 30 秒（新消息可取消），到点再生�
   await waitFor(() => all("SELECT id FROM messages WHERE character_id = ? AND role = 'agent'", character.id).length > before);
 });
 
-test('sentence: 连续 3 条 incomplete 受 6s 总上限约束，达到上限直接生成', { timeout: 20_000 }, async () => {
+test('sentence: 连续 3 条 incomplete 受 60s 总上限约束，达到上限直接生成', { timeout: 20_000 }, async () => {
   const character = freshCharacter();
   const fake = fakeProvider();
   fake.state.sentence = 'no';
@@ -609,27 +609,27 @@ test('sentence: 连续 3 条 incomplete 受 6s 总上限约束，达到上限直
   assert.equal(jobs1.length, 1);
   const firstAt = Number(jobPayload(jobs1[0]).firstAt);
   assert.ok(firstAt > 0, '等待任务应带 firstAt');
-  assert.ok(Date.parse(jobs1[0].due_at) - firstAt <= 6_500, '首条等待约 6s');
+  assert.ok(Date.parse(jobs1[0].due_at) - firstAt <= 30_500, '首条等待约 30s');
 
   const second = await chat.submitUserMessage({ userId, characterId: character.id, content: '我想说的是' });
   assert.equal(second.reason, 'sentence_wait');
   const jobs2 = pendingJobs(character.id, 'sentence_wait');
   assert.equal(jobs2.length, 1, '新消息应取消旧计时并重排');
   assert.equal(Number(jobPayload(jobs2[0]).firstAt), firstAt, '连续输入沿用第一条的起点');
-  assert.ok(Date.parse(jobs2[0].due_at) <= firstAt + 6_500, '总等待不超过 6s');
+  assert.ok(Date.parse(jobs2[0].due_at) <= firstAt + 60_500, '总等待不超过 60s');
 
   const third = await chat.submitUserMessage({ userId, characterId: character.id, content: '我想说的是那个' });
   assert.equal(third.reason, 'sentence_wait');
   const jobs3 = pendingJobs(character.id, 'sentence_wait');
   assert.equal(jobs3.length, 1);
-  assert.ok(Date.parse(jobs3[0].due_at) <= firstAt + 6_500);
+  assert.ok(Date.parse(jobs3[0].due_at) <= firstAt + 60_500);
 
-  // 模拟这一段已经等满 6s：pending 任务 firstAt 提前到 7s 前
+  // 模拟这一段已经等满 60s：pending 任务 firstAt 提前到 61s 前
   run("UPDATE jobs SET status = 'cancelled' WHERE character_id = ? AND type = 'sentence_wait' AND status = 'pending'", character.id);
   enqueue(
     'sentence_wait',
     new Date(Date.now() + 20_000).toISOString(),
-    { messageId: 'm_dummy', firstAt: Date.now() - 7_000 },
+    { messageId: 'm_dummy', firstAt: Date.now() - 61_000 },
     { userId, characterId: character.id },
   );
   const capped = await chat.submitUserMessage({ userId, characterId: character.id, content: '还没说完' });

@@ -24,7 +24,7 @@ class BookshelfPage extends StatefulWidget {
 
 class _BookshelfPageState extends State<BookshelfPage>
     with SingleTickerProviderStateMixin {
-  static const List<String> _types = <String>['novel', 'essay', 'diary', 'news'];
+  static const List<String> _types = <String>['novel', 'essay', 'diary', 'news', 'dream'];
 
   late final TabController _tab;
   List<Character> _characters = <Character>[];
@@ -556,6 +556,7 @@ class _BookshelfPageState extends State<BookshelfPage>
                 _bookList('essay'),
                 _diaryTab(),
                 _bookList('news'),
+                _bookList('dream'),
               ],
             ),
           ),

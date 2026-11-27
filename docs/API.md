@@ -139,7 +139,7 @@ WebSocket `ws://HOST/ws?token=<token>`，服务端推送：
 ## 6. 书架与日记（待实现：routes/books.js）
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/books?characterId=&type=novel\|diary\|essay\|news` | 列表（不含日记正文） |
+| GET | `/api/books?characterId=&type=novel\|diary\|essay\|news\|dream` | 列表（不含日记正文） |
 | GET | `/api/books/:id` | 详情（日记需 `password` 查询参数或先解锁） |
 | POST | `/api/books` | 手动创建创作 |
 | POST | `/api/books/diary/unlock` | `{characterId, password}` → `{ok}` 并返回当日日记 |
@@ -545,3 +545,25 @@ WS 事件：`plaza_used`、`plaza_quota`、`plaza_expiring`、`plaza_expired`、
 - 占位变量：`{{name}} {{shareId}} {{code}} {{minutes}} {{purposeLabel}} {{email}} {{servicesText}} {{resourceTitle}} {{usedTokens}} {{tokenSoft}} {{tokenHard}} {{expiresAt}} {{until}} {{scopeText}} {{reason}} {{time}}`。
 - `POST /api/admin/mail-templates/preview`：`{ kind, vars? }` → `{ subject, html, text, overridden, effective }`，不发送。
 - `POST /api/admin/mail-templates/test`：`{ kind, to? }` → 使用当前 SMTP 给管理员或指定邮箱发一封测试邮件，返回 `{ ok, reason, to, kind, subject }`；未配置 SMTP 时 `ok:false, reason:"smtp_not_configured"`。
+
+
+## v2.0.0 新增
+
+### 对话等待参数（角色级）
+
+角色 settings 新增 `dialogue` 节（默认值回归需求书）：
+
+```json
+{"dialogue":{"sentenceWaitSec":30,"sentenceMaxWaitSec":60,"activeWaitMinSec":60,"activeWaitMaxSec":80}}
+```
+
+- `sentenceWaitSec`：碎片消息等待秒数（3–120，默认 30）；`sentenceMaxWaitSec` 为连续输入总上限（不低于单段等待，默认 60）。
+- `activeWaitMinSec` / `activeWaitMaxSec`：主动回复等待区间（30–600，默认 60–80，min>max 时自动交换）。
+- `PUT /api/characters/:id/settings` 接受 `dialogue` 部分字段，服务端合并并钳制。
+
+### 梦境生成
+
+- 角色入睡（状态刷新写入 `sleep_state=sleeping/napping`）后自动排期 `dream` 任务：夜间在睡眠窗口内随机时刻生成，午睡 30% 概率；每段睡眠最多 1 梦、每日最多 2 梦；软/硬限额跳过。
+- 梦境走模型分工 `dream` 任务（`modelRouting.dream`），消耗计入统计（kind=`dream`）。
+- 产出存书架：`GET /api/books?characterId=&type=dream`；梦境不上锁、不进连载分组；正文加密存储。
+- 梦境写入系统上下文（tag=`dream`，3 天过期）；醒来后 2–10 分钟可能以主动消息向用户提起（`active_reply` 任务 `kind=dream_mention`）。

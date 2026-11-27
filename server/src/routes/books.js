@@ -15,7 +15,7 @@ import {
 import { enqueue } from '../services/jobs.js';
 import { sanitizeCreation } from '../ai/creation.js';
 
-const BOOK_TYPES = ['novel', 'diary', 'essay', 'news'];
+const BOOK_TYPES = ['novel', 'diary', 'essay', 'news', 'dream'];
 const MANUAL_TYPES = ['novel', 'essay'];
 
 function safeDec(userId, blob) {
@@ -103,7 +103,7 @@ export default function register() {
     asyncHandler(async (req, res) => {
       const character = resolveCharacter(req);
       const type = String(req.query.type || '').trim();
-      if (type && !BOOK_TYPES.includes(type)) throw badRequest('type 只能是 novel/diary/essay/news', 'type_invalid');
+      if (type && !BOOK_TYPES.includes(type)) throw badRequest('type 只能是 novel/diary/essay/news/dream', 'type_invalid');
       const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
       const seriesId = String(req.query.seriesId || '').trim();
       const where = ['user_id = ?', 'character_id = ?'];
@@ -195,7 +195,7 @@ export default function register() {
     asyncHandler(async (req, res) => {
       const character = resolveCharacter(req);
       const type = String(req.body?.type || '').trim();
-      if (!BOOK_TYPES.includes(type)) throw badRequest('type 只能是 novel/diary/essay/news', 'type_invalid');
+      if (!BOOK_TYPES.includes(type)) throw badRequest('type 只能是 novel/diary/essay/news/dream', 'type_invalid');
       if (!MANUAL_TYPES.includes(type)) {
         throw badRequest('日记与浏览记录由角色自动生成，手动创作仅支持 novel/essay', 'type_manual_unsupported');
       }

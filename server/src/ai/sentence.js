@@ -3,18 +3,43 @@
 // 判定为 no → 等待 30 秒（新消息到达即取消）；判定为 yes 或判定失败 → 直接生成回复。
 import * as defaultProvider from './provider.js';
 
-// v1.5.0：连续碎片最多等待 6 秒（从第一条未完成消息起算），新消息到达重置/取消
-export const SENTENCE_WAIT_MS = 6_000;
-export const SENTENCE_MAX_WAIT_MS = 6_000;
+// v2.0.0：默认回归需求书——单段等待 30 秒，连续输入总上限 60 秒（从第一条未完成消息起算）。
+// 角色 settings.dialogue 可覆盖（sentenceWaitSec 3–120，sentenceMaxWaitSec 不低于单段等待）。
+export const SENTENCE_WAIT_MS = 30_000;
+export const SENTENCE_MAX_WAIT_MS = 60_000;
 export const SENTENCE_MAX_TOKENS = 4;
 
+const clampNum = (v, min, max, fallback) => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(max, Math.max(min, n));
+};
+
 /**
- * 同一段连续输入的等待上限：从第一条未完成消息起算最多等 6s；新消息沿用同一 firstAt。
+ * 从角色 settings 推导句子等待参数。
+ * @returns {{waitMs:number, maxWaitMs:number}}
+ */
+export function sentenceTiming(settings = null) {
+  const d = settings?.dialogue || {};
+  const waitSec = clampNum(d.sentenceWaitSec, 3, 120, 30);
+  const maxSec = d.sentenceMaxWaitSec != null
+    ? Math.max(waitSec, clampNum(d.sentenceMaxWaitSec, 3, 240, waitSec * 2))
+    : waitSec * 2;
+  return { waitMs: Math.round(waitSec * 1000), maxWaitMs: Math.round(maxSec * 1000) };
+}
+
+/**
+ * 同一段连续输入的等待上限：默认单段 30s、总计 60s；新消息沿用同一 firstAt。
  * @returns {number} 毫秒时间戳
  */
-export function sentenceWaitDueMs({ now = Date.now(), firstAt = null } = {}) {
+export function sentenceWaitDueMs({
+  now = Date.now(),
+  firstAt = null,
+  waitMs = SENTENCE_WAIT_MS,
+  maxWaitMs = SENTENCE_MAX_WAIT_MS,
+} = {}) {
   const start = Number(firstAt) > 0 ? Number(firstAt) : Number(now);
-  return Math.min(Number(now) + SENTENCE_WAIT_MS, start + SENTENCE_MAX_WAIT_MS);
+  return Math.min(Number(now) + waitMs, start + maxWaitMs);
 }
 
 export const SENTENCE_SYSTEM_PROMPT = [
@@ -87,4 +112,4 @@ export function needsSentenceCheck({ kind = 'text', text = '', hasTranscript = f
   return false;
 }
 
-export default { checkSentenceComplete, cleanVerdict, needsSentenceCheck, sentenceWaitDueMs, SENTENCE_WAIT_MS, SENTENCE_MAX_WAIT_MS };
+export default { checkSentenceComplete, cleanVerdict, needsSentenceCheck, sentenceWaitDueMs, sentenceTiming, SENTENCE_WAIT_MS, SENTENCE_MAX_WAIT_MS };

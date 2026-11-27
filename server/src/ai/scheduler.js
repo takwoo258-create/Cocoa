@@ -55,6 +55,9 @@ const MEMORY_HANDLERS = {
   creation: ['./creation.js', 'runCreation'],
   creation_run: ['./creation.js', 'runCreation'],
   creation_generate: ['./creation.js', 'runCreation'],
+  // v2.0.0：梦境生成
+  dream: ['./dream.js', 'runDream'],
+  dream_run: ['./dream.js', 'runDream'],
 };
 
 function contextOf(job, payload) {

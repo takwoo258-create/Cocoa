@@ -732,6 +732,9 @@ test('状态刷新：失败后进入 5 分钟冷却（429 status_cooldown）', a
 });
 
 test('删除角色级联清理全部资产', async () => {
+  // v2.0.0：未到期任务（如梦境/状态刷新）也应随角色一并清理，避免 jobs 残留
+  const { enqueue } = await import('../src/services/jobs.js');
+  enqueue('dream', new Date(Date.now() + 3600_000).toISOString(), { mode: 'sleeping' }, { userId: alice.id, characterId: charA.id });
   const del = await api(`/api/characters/${charA.id}`, { method: 'DELETE', token: alice.token });
   assert.equal(del.status, 200);
   assert.equal(del.body.deleted, true);
@@ -739,4 +742,5 @@ test('删除角色级联清理全部资产', async () => {
   assert.equal(get('SELECT COUNT(*) AS n FROM character_state WHERE character_id = ?', charA.id).n, 0);
   assert.equal(get('SELECT COUNT(*) AS n FROM intimacy_log WHERE character_id = ?', charA.id).n, 0);
   assert.equal(get('SELECT COUNT(*) AS n FROM conversations WHERE character_id = ?', charA.id).n, 0);
+  assert.equal(get('SELECT COUNT(*) AS n FROM jobs WHERE character_id = ?', charA.id).n, 0);
 });

@@ -2,7 +2,7 @@
 library cocoa.core.constants;
 
 const String kAppName = 'Cocoa';
-const String kAppVersion = '1.5.2';
+const String kAppVersion = '2.0.0';
 
 /// 默认服务地址（可在设置页修改）。
 const String kDefaultBaseUrl = 'https://120-26-204-70.sslip.io';
@@ -41,6 +41,7 @@ const List<String> kRoutingTasks = <String>[
   'profile',
   'portrait',
   'creation',
+  'dream',
   'status',
   'memory',
   'vision',
@@ -56,6 +57,7 @@ const Map<String, String> kRoutingLabels = <String, String>{
   'profile': '人物画像',
   'portrait': '心理画像提炼',
   'creation': '角色创作（小说/日记）',
+  'dream': '梦境生成',
   'status': '角色状态刷新',
   'memory': '记忆提取',
   'vision': '图片理解',
@@ -122,6 +124,7 @@ const Map<String, String> kBookTypeLabels = <String, String>{
   'essay': '文集',
   'diary': '日记',
   'news': '浏览记录',
+  'dream': '梦境',
 };
 
 const String kNoticeCompressing = '在回味之前的记忆喵~';

@@ -29,8 +29,23 @@ export function timesecToDelayMs(value, fallbackSec = 90) {
   return normalizeTimesec(value, fallbackSec) * 1000;
 }
 
-export const WAIT_MIN_MS = 90_000;
-export const WAIT_MAX_MS = 120_000;
+// v2.0.0：默认回归需求书 60–80 秒；角色 settings.dialogue.activeWaitMinSec/MaxSec 可覆盖（30–600）
+export const WAIT_MIN_MS = 60_000;
+export const WAIT_MAX_MS = 80_000;
+
+/** 从角色 settings 推导主动等待区间（秒→毫秒，钳制 30–600，min>max 时交换） */
+export function activeWaitRange(settings = null) {
+  const d = settings?.dialogue || {};
+  const clampSec = (v, fallback) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.min(600, Math.max(30, n));
+  };
+  let minSec = clampSec(d.activeWaitMinSec, 60);
+  let maxSec = clampSec(d.activeWaitMaxSec, 80);
+  if (minSec > maxSec) [minSec, maxSec] = [maxSec, minSec];
+  return { minMs: Math.round(minSec * 1000), maxMs: Math.round(maxSec * 1000) };
+}
 
 export const TIMEOUT_INSTRUCTION = [
   '系统提示：用户已经超过等待期仍未回复（这条后台消息的内容是：用户未回复）。',
@@ -41,6 +56,12 @@ export const TIMEOUT_INSTRUCTION = [
   '- 适合追问：{"type":"message","content":"一句简短自然的追问","timesec":<秒>}；',
   '- 不适合追问：{"type":"subjective","content":"下一次主动发出的消息","timesec":<秒>}。',
   'sendsec 仍兼容，作为 timesec 的别名。只输出一个 JSON 对象。',
+].join('\n');
+
+export const DREAM_MENTION_INSTRUCTION = [
+  '系统提示：你刚醒来，还记得睡着时做的那场梦。',
+  '请自然、简短地向用户提起这个梦（可以带一点刚睡醒的语气），不要逐字复述梦境记录，也不要说这是系统安排。',
+  '按 {"type":"message","content":"一句简短自然的话","timesec":<秒>} 输出。',
 ].join('\n');
 
 export const ACTIVE_INSTRUCTION = [
@@ -86,12 +107,14 @@ function upsertWaitState({ userId, characterId, mode, lastAgentAt = null, deadli
   return getWaitState(userId, characterId);
 }
 
-/** 60-80 秒随机等待（含端点） */
-export function nextWaitMs(randomFn = null) {
+/** 60-80 秒随机等待（含端点）；range 可覆盖区间（角色级配置） */
+export function nextWaitMs(randomFn = null, range = null) {
+  const minMs = Number(range?.minMs) > 0 ? Number(range.minMs) : WAIT_MIN_MS;
+  const maxMs = Number(range?.maxMs) >= minMs ? Number(range.maxMs) : Math.max(minMs, WAIT_MAX_MS);
   if (typeof randomFn === 'function') {
-    return WAIT_MIN_MS + Math.round(clamp(Number(randomFn()) || 0, 0, 1) * (WAIT_MAX_MS - WAIT_MIN_MS));
+    return minMs + Math.round(clamp(Number(randomFn()) || 0, 0, 1) * (maxMs - minMs));
   }
-  return randomInt(WAIT_MIN_MS, WAIT_MAX_MS);
+  return randomInt(minMs, maxMs);
 }
 
 export function activeReplyEnabled(userId, character) {
@@ -117,7 +140,7 @@ export function markAgentSent({ userId, characterId, delayMs = null } = {}) {
     upsertWaitState({ userId, characterId, mode: 'idle', deadline: null, attempts: 0 });
     return { scheduled: false, reason: 'disabled' };
   }
-  const ms = delayMs == null ? nextWaitMs() : Math.max(1_000, Math.round(delayMs));
+  const ms = delayMs == null ? nextWaitMs(null, activeWaitRange(character?.settings)) : Math.max(1_000, Math.round(delayMs));
   const now = nowIso();
   const deadline = new Date(Date.now() + ms).toISOString();
   upsertWaitState({ userId, characterId, mode: 'waiting', lastAgentAt: now, deadline, attempts: 0 });
@@ -146,6 +169,24 @@ export async function handleActiveReplyJob({ userId, characterId, payload = {}, 
   if (kind === 'subjective') {
     // 任务到点即发送：sendsec 在入队时已折算进 due_at，这里必须立即发，避免再次延迟
     return sendSubjective({ userId, characterId, content: payload.content, sendsec: 0 });
+  }
+  if (kind === 'dream_mention') {
+    // v2.0.0：醒来后向用户提起梦境，走正常生成管道（口语化、可分段）
+    try {
+      const { runGeneration } = await import('./chat.js');
+      const out = await runGeneration({
+        userId,
+        characterId,
+        reason: 'dream_mention',
+        provider,
+        triggerText: '',
+        extraInstruction: `${DREAM_MENTION_INSTRUCTION}\n梦境内容：${String(payload.dreamContent || '').slice(0, 600)}`,
+      });
+      return { ok: true, ...out };
+    } catch (err) {
+      logger.warn('梦境提及生成失败', err?.message || err);
+      return { ok: false, reason: 'generation_failed', error: err?.message || 'upstream_error' };
+    }
   }
   return handleWaitTimeout({ userId, characterId, provider });
 }
@@ -361,6 +402,7 @@ export async function judgeWakeup({ userId, characterId, text = '', provider = n
 
 export default {
   nextWaitMs,
+  activeWaitRange,
   normalizeTimesec,
   timesecToDelayMs,
   markAgentSent,

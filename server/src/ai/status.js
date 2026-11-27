@@ -460,6 +460,19 @@ export async function refreshStatus({ userId, characterId, provider = defaultPro
     });
 
     broadcast(userId, { type: 'state', state: payload });
+    // v2.0.0：睡眠转换钩子——入睡排期梦境，醒来排期「讲梦」主动消息
+    if (prevSleep !== modelSleep) {
+      try {
+        const dream = await import('./dream.js');
+        if (modelSleep === 'sleeping' || modelSleep === 'napping') {
+          dream.scheduleDream({ userId, characterId, mode: modelSleep, wakeAt: nextChange });
+        } else if (prevSleep === 'sleeping' || prevSleep === 'napping') {
+          dream.planDreamMention({ userId, characterId });
+        }
+      } catch (err) {
+        logger.warn('梦境排期失败', err?.message || err);
+      }
+    }
     scheduleStatusRefresh({ userId, characterId, settings });
     return { ok: true, duplicate: false, state: payload, flags, messageId, sleepState: modelSleep };
   } finally {
